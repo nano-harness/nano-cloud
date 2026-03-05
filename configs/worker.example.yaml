@@ -1,0 +1,47 @@
+# Worker Configuration
+# relay_url: URL of the Nano Cloud Gateway
+# If Nginx proxy is enabled, use port 80 (ws://) or 443 (wss://)
+relay_url: ws://localhost:8081
+enroll_token: ""
+token: ""
+worker_id: ""
+name: nano-sandbox-worker
+version: "2.0"
+labels:
+  - docker-desktop
+workspace_root: /tmp/nano-workspaces
+state_dir: ""
+
+# Optional: Forward environment variables from host to agent container
+# This allows you to set API keys in your shell (export NANO_API_KEY=...) 
+# instead of hardcoding them here.
+env_passthrough:
+  - NANO_API_KEY
+  - OPENAI_API_KEY
+  - ANTHROPIC_API_KEY
+
+# Optional: Mount a local agent configuration file into the container
+# agent_config_path: "./agent-config.yaml"
+
+# Optional: Real egress allowlist enforcement when RunRequest.policy.network == ALLOWLIST
+# network_policy_image: nano-net-policy-runtime:local
+# network_allowlist:
+#   - host: api.openai.com
+#     protocol: tcp
+#     ports: [443]
+
+runtimes:
+  nano_agent:
+    image: nano-agent-runtime:local
+  claude_code:
+    image: nano-cli-runtime:local
+    env:
+      RUNTIME_BIN: claude
+  opencode:
+    image: nano-cli-runtime:local
+    env:
+      RUNTIME_BIN: opencode
+  custom:
+    image: nano-cli-runtime:local
+    env:
+      RUNTIME_BIN: /bin/echo

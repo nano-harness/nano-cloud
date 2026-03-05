@@ -1,0 +1,254 @@
+syntax = "proto3";
+
+package nano.cloud.runtime.v1;
+
+option go_package = "github.com/nano-harness/nano-cloud/proto/runtime/v1;runtimev1";
+
+message Envelope {
+  string protocol_version = 1;
+  string tunnel_id = 2;
+  string worker_id = 3;
+  string stream_id = 4;
+  uint64 seq = 5;
+  oneof message {
+    WorkerHello worker_hello = 10;
+    WorkerHeartbeat worker_heartbeat = 11;
+    RunRequest run_request = 12;
+    RunEvent run_event = 13;
+    CancelRequest cancel_request = 14;
+    CancelAck cancel_ack = 15;
+    WorkspaceSync workspace_sync = 16;
+    Error error = 17;
+  }
+}
+
+message WorkerHello {
+  string name = 1;
+  string version = 2;
+  repeated string labels = 3;
+  repeated Runtime supported_runtimes = 4;
+  Capacity capacity = 5;
+  DockerInfo docker = 6;
+}
+
+message WorkerHeartbeat {
+  uint64 unix_millis = 1;
+  Capacity current = 2;
+  uint32 running_streams = 3;
+  uint32 queued_streams = 4;
+}
+
+message DockerInfo {
+  string server_version = 1;
+  string os = 2;
+  string arch = 3;
+  bool rootless = 4;
+}
+
+message Capacity {
+  uint32 cpu_millis = 1;
+  uint64 memory_bytes = 2;
+  uint32 pids = 3;
+  uint64 disk_bytes = 4;
+}
+
+enum Runtime {
+  RUNTIME_UNSPECIFIED = 0;
+  RUNTIME_NANO_AGENT = 1;
+  RUNTIME_CLAUDE_CODE = 2;
+  RUNTIME_OPENCODE = 3;
+  RUNTIME_CUSTOM = 100;
+}
+
+message RunRequest {
+  string session_id = 1;
+  Runtime runtime = 2;
+  WorkspaceSpec workspace = 3;
+  Input input = 4;
+  Policy policy = 5;
+  string secrets_ref = 6;
+}
+
+message WorkspaceSpec {
+  string workspace_id = 1;
+  WorkspaceSource source = 2;
+  MountMode mount_mode = 3;
+  string workdir = 4;
+  bool persistent = 5;
+}
+
+message WorkspaceSource {
+  oneof source {
+    GitSource git = 1;
+    ArtifactSource artifact = 2;
+    EmptySource empty = 3;
+  }
+}
+
+message GitSource {
+  string url = 1;
+  string ref = 2;
+  string subdir = 3;
+}
+
+message ArtifactSource {
+  string uri = 1;
+  string format = 2;
+}
+
+message EmptySource {}
+
+enum MountMode {
+  MOUNT_MODE_UNSPECIFIED = 0;
+  MOUNT_MODE_VOLUME = 1;
+  MOUNT_MODE_BIND = 2;
+}
+
+message Input {
+  repeated Message messages = 1;
+  repeated Attachment attachments = 2;
+}
+
+message Message {
+  Role role = 1;
+  string content = 2;
+  string name = 3;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_SYSTEM = 1;
+  ROLE_USER = 2;
+  ROLE_ASSISTANT = 3;
+}
+
+message Attachment {
+  string name = 1;
+  string mime_type = 2;
+  oneof data {
+    bytes inline_bytes = 3;
+    string uri = 4;
+  }
+}
+
+message Policy {
+  uint32 timeout_seconds = 1;
+  Capacity resources = 2;
+  NetworkPolicy network = 3;
+  ApprovalPolicy approval = 4;
+}
+
+enum NetworkPolicy {
+  NETWORK_POLICY_UNSPECIFIED = 0;
+  NETWORK_POLICY_NONE = 1;
+  NETWORK_POLICY_ALLOWLIST = 2;
+  NETWORK_POLICY_ALL = 3;
+}
+
+enum ApprovalPolicy {
+  APPROVAL_POLICY_UNSPECIFIED = 0;
+  APPROVAL_POLICY_AUTO = 1;
+  APPROVAL_POLICY_ASK = 2;
+  APPROVAL_POLICY_DENY = 3;
+}
+
+message RunEvent {
+  EventKind kind = 1;
+  oneof payload {
+    StatusEvent status = 10;
+    AssistantDeltaEvent assistant_delta = 11;
+    ToolCallEvent tool_call = 12;
+    ToolResultEvent tool_result = 13;
+    RequiresApprovalEvent requires_approval = 14;
+    CompletedEvent completed = 15;
+    Error error = 16;
+    ArtifactEvent artifact = 17;
+  }
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_STATUS = 1;
+  EVENT_KIND_ASSISTANT_DELTA = 2;
+  EVENT_KIND_TOOL_CALL = 3;
+  EVENT_KIND_TOOL_RESULT = 4;
+  EVENT_KIND_REQUIRES_APPROVAL = 5;
+  EVENT_KIND_COMPLETED = 6;
+  EVENT_KIND_ERROR = 7;
+  EVENT_KIND_ARTIFACT = 8;
+}
+
+message StatusEvent {
+  string status = 1;
+  string detail = 2;
+}
+
+message AssistantDeltaEvent {
+  string text = 1;
+}
+
+message ToolCallEvent {
+  string call_id = 1;
+  string name = 2;
+  string args_json = 3;
+}
+
+message ToolResultEvent {
+  string call_id = 1;
+  string stdout = 2;
+  string stderr = 3;
+  int32 exit_code = 4;
+  repeated ArtifactRef artifacts = 5;
+}
+
+message RequiresApprovalEvent {
+  string prompt = 1;
+  repeated string options = 2;
+  string default_option = 3;
+  string context_json = 4;
+}
+
+message CompletedEvent {
+  bool success = 1;
+  int32 exit_code = 2;
+  string stats_json = 3;
+}
+
+message ArtifactEvent {
+  ArtifactRef artifact = 1;
+}
+
+message ArtifactRef {
+  string uri = 1;
+  string name = 2;
+  string mime_type = 3;
+  uint64 size_bytes = 4;
+}
+
+message CancelRequest {
+  string reason = 1;
+}
+
+message CancelAck {
+  bool accepted = 1;
+  string detail = 2;
+}
+
+message WorkspaceSync {
+  WorkspaceSyncKind kind = 1;
+  string path = 2;
+  bytes data = 3;
+  string encoding = 4;
+}
+
+enum WorkspaceSyncKind {
+  WORKSPACE_SYNC_KIND_UNSPECIFIED = 0;
+  WORKSPACE_SYNC_KIND_UPLOAD_TAR = 1;
+  WORKSPACE_SYNC_KIND_DOWNLOAD_TAR = 2;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+  string details_json = 3;
+}

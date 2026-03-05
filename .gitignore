@@ -1,0 +1,8 @@
+/worker
+*.exe
+*.o
+bin/
+worker-config.local.yaml
+data/
+data-e2e/
+state-e2e/
