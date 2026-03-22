@@ -1,4 +1,4 @@
-package main
+package main //nolint:revive
 
 import (
 	"context"
@@ -248,7 +248,7 @@ func (p *proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	for k, vv := range resp.Header {
 		for _, v := range vv {

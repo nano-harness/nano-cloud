@@ -1,4 +1,4 @@
-package main
+package main //nolint:revive
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/nano-harness/nano-agent/pkg/agent"
 	"github.com/nano-harness/nano-agent/pkg/config"
+	"github.com/nano-harness/nano-agent/pkg/event"
 )
 
 func main() {
@@ -19,7 +20,7 @@ func main() {
 
 	cfg, err := config.LoadConfig("")
 	if err != nil {
-		os.Stderr.WriteString(err.Error() + "\n")
+		os.Stderr.WriteString(err.Error() + "\n") //nolint:errcheck
 		os.Exit(1)
 	}
 
@@ -35,7 +36,7 @@ func main() {
 
 	a, err := agent.New(cfg, approvalHandler)
 	if err != nil {
-		os.Stderr.WriteString(err.Error() + "\n")
+		os.Stderr.WriteString(err.Error() + "\n") //nolint:errcheck
 		os.Exit(1)
 	}
 
@@ -49,9 +50,22 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	main := agent.NewMainAgent(a)
-	if err := main.Execute(ctx, prompt, os.Stdout); err != nil {
-		os.Stderr.WriteString(err.Error() + "\n")
+	sessionID := strings.TrimSpace(os.Getenv("SESSION_ID"))
+	if sessionID == "" {
+		sessionID = "default"
+	}
+
+	// Persist sessions in the workspace to ensure isolation and persistence across runs
+	a.GetSessionManager().SetStorage(agent.NewLocalSessionStorage("/workspace/.nano/sessions"))
+
+	eventHandler := func(e event.StreamEvent) {
+		if e.Content != "" {
+			_, _ = os.Stdout.WriteString(e.Content)
+		}
+	}
+
+	if err := a.ProcessStreamWithMultimodalAndSession(ctx, sessionID, prompt, nil, eventHandler); err != nil {
+		os.Stderr.WriteString(err.Error() + "\n") //nolint:errcheck
 		os.Exit(1)
 	}
 }

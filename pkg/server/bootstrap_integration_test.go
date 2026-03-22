@@ -2,9 +2,7 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,14 +12,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func TestBootstrapFromRemote_WithGatewayStore(t *testing.T) {
+func TestBootstrapFromRemote_PairingFlow(t *testing.T) {
 	storeDir := t.TempDir()
-	toks := enrollTokensFile{Tokens: []enrollTokenRecord{{Token: "enroll-1"}}}
-	b, _ := json.Marshal(toks)
-	if err := os.WriteFile(filepath.Join(storeDir, "enroll_tokens.json"), append(b, '\n'), 0o600); err != nil {
-		t.Fatalf("write enroll_tokens.json: %v", err)
-	}
-
 	srv := NewGatewayServerWithLogger(":0", "", storeDir, logrus.New())
 	ts := httptest.NewServer(srv.router)
 	defer ts.Close()
@@ -29,44 +21,75 @@ func TestBootstrapFromRemote_WithGatewayStore(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
 	stateDir := t.TempDir()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cfg1, err := worker.BootstrapFromRemote(ctx, worker.BootstrapConfig{
-		RelayURL:      wsURL,
-		EnrollToken:   "enroll-1",
-		StateDir:      stateDir,
-		WorkspaceRoot: filepath.Join(stateDir, "workspaces"),
-		Labels:        []string{"docker-desktop"},
-	})
-	if err != nil {
-		t.Fatalf("BootstrapFromRemote: %v", err)
-	}
-	if cfg1.RelayURL != wsURL {
-		t.Fatalf("relay url mismatch: got=%q want=%q", cfg1.RelayURL, wsURL)
-	}
-	if cfg1.Token == "" {
-		t.Fatalf("expected worker token")
-	}
-	if cfg1.WorkerID == "" {
-		t.Fatalf("expected worker id")
-	}
-	if cfg1.WorkspaceRoot == "" {
-		t.Fatalf("expected workspace root")
+	// Run bootstrap in a goroutine because it blocks waiting for approval
+	errCh := make(chan error, 1)
+	cfgCh := make(chan *worker.Config, 1)
+
+	go func() {
+		cfg, err := worker.BootstrapFromRemote(ctx, worker.BootstrapConfig{
+			RelayURL:      wsURL,
+			StateDir:      stateDir,
+			WorkspaceRoot: filepath.Join(stateDir, "workspaces"),
+			Labels:        []string{"docker-desktop"},
+		})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		cfgCh <- cfg
+	}()
+
+	// Wait a bit for the request to be created
+	var pairingID string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		reqs, err := srv.configStore.ListPairingRequests()
+		if err == nil && len(reqs) > 0 {
+			pairingID = reqs[0].ID
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
-	cfg2, err := worker.BootstrapFromRemote(ctx, worker.BootstrapConfig{
-		RelayURL:      wsURL,
-		StateDir:      stateDir,
-		WorkspaceRoot: cfg1.WorkspaceRoot,
-	})
-	if err != nil {
-		t.Fatalf("BootstrapFromRemote (resume): %v", err)
+	if pairingID == "" {
+		t.Fatalf("timeout waiting for pairing request creation")
 	}
-	if cfg2.WorkerID != cfg1.WorkerID {
-		t.Fatalf("worker id mismatch after resume: got=%q want=%q", cfg2.WorkerID, cfg1.WorkerID)
+
+	// Approve it
+	if err := srv.configStore.ApprovePairingRequest(pairingID); err != nil {
+		t.Fatalf("ApprovePairingRequest: %v", err)
 	}
-	if cfg2.Token != cfg1.Token {
-		t.Fatalf("worker token mismatch after resume")
+
+	// Wait for bootstrap to complete
+	select {
+	case err := <-errCh:
+		t.Fatalf("BootstrapFromRemote failed: %v", err)
+	case cfg := <-cfgCh:
+		if cfg.RelayURL != wsURL {
+			t.Fatalf("relay url mismatch: got=%q want=%q", cfg.RelayURL, wsURL)
+		}
+		if cfg.Token == "" {
+			t.Fatalf("expected worker token")
+		}
+		// Verify resume capability
+		cfg2, err := worker.BootstrapFromRemote(ctx, worker.BootstrapConfig{
+			RelayURL:      wsURL,
+			StateDir:      stateDir,
+			WorkspaceRoot: cfg.WorkspaceRoot,
+		})
+		if err != nil {
+			t.Fatalf("BootstrapFromRemote (resume): %v", err)
+		}
+		if cfg2.WorkerID != cfg.WorkerID {
+			t.Fatalf("worker id mismatch after resume: got=%q want=%q", cfg2.WorkerID, cfg.WorkerID)
+		}
+		if cfg2.Token != cfg.Token {
+			t.Fatalf("worker token mismatch after resume")
+		}
+	case <-ctx.Done():
+		t.Fatalf("timeout waiting for bootstrap completion")
 	}
 }

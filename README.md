@@ -42,25 +42,75 @@ cli:
     args: ["--model", "gpt-4.1-mini"]
 ```
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Docker Compose)
+
+The easiest way to run the full stack locally.
+
+1.  **Build Runtimes** (Required):
+    ```bash
+    # Build the agent runtime images
+    cd docker/nano-agent-runtime && docker build -t nano-agent-runtime:local .
+    # Build the CLI wrapper runtime image
+    cd ../cli-runtime && docker build -t nano-cli-runtime:local .
+    cd ../..
+    ```
+
+2.  **Start Services**:
+    ```bash
+    # Configure and start services (Gateway + Worker)
+    ./scripts/connect.sh
+    # (Select 'ws://localhost:8081' when prompted)
+    ```
+
+3.  **Approve Worker**:
+    *   Open [http://localhost:8081/console](http://localhost:8081/console)
+    *   Login with token: `dev-token`
+    *   Look for "Pending Pairing Requests" and click **Approve**.
+
+4.  **Ready!**
+    *   Your worker is now online and ready to accept tasks.
+
+## 🌐 Remote Gateway Mode (Worker Only)
+
+If your Gateway is deployed remotely (e.g. `wss://nano-gateway.example.com`), you can use the interactive setup script:
+
+1.  **Run Configuration Wizard**:
+    ```bash
+    ./scripts/connect.sh
+    ```
+    
+2.  **Follow the prompts**:
+    *   Enter Gateway URL.
+    *   Enter LLM API Endpoint and Key.
+    *   (Optional) Configure advanced Nano Agent settings via `nano-agent.env`.
+
+3.  **Approve**:
+    *   Go to your remote Gateway Console and approve the worker.
+
+The script will save your configuration to `.env` and start the worker automatically.
+
+## 🛠 Manual Setup (Go)
+
+If you prefer running binaries directly:
 
 1.  **Start Gateway**:
     ```bash
-    go build -o gateway ./cmd/gateway
-    ./gateway -addr :8081 -token "dev-token"
+    go build -o bin/gateway ./cmd/gateway
+    ./bin/gateway -addr :8081 -token "dev-token" -config-store-dir ./data
     ```
 
-2.  **Configure Worker**:
+2.  **Start Worker**:
     ```bash
-    ./scripts/setup-worker.sh
+    go build -o bin/worker ./cmd/worker
+    # Interactive setup (generates worker-config.yaml)
+    ./scripts/setup-worker.sh 
+    # Run worker
+    ./bin/worker -config worker-config.yaml
     ```
 
-3.  **Start Worker**:
-    ```bash
-    export NANO_API_KEY=sk-...  # Optional: Pass keys to agent
-    go build -o worker ./cmd/worker
-    ./worker -config worker-config.yaml
-    ```
+3.  **Approve**:
+    *   Check worker logs for "Request ID".
+    *   Go to Console and approve.
 
 ## 📂 Project Structure
 

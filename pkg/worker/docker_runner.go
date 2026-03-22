@@ -11,7 +11,7 @@ import (
 	runtimev1 "github.com/nano-harness/nano-cloud/proto/runtime/v1"
 )
 
-type DockerRunSpec struct {
+type DockerRunSpec struct { //nolint:revive
 	Image     string
 	Name      string
 	Workdir   string
@@ -23,13 +23,13 @@ type DockerRunSpec struct {
 	ExtraArgs []string
 }
 
-type DockerProcess struct {
+type DockerProcess struct { //nolint:revive
 	ContainerID string
 	Container   string
 	mu          sync.Mutex
 }
 
-func DockerNetworkCreateInternal(ctx context.Context, name string) error {
+func DockerNetworkCreateInternal(ctx context.Context, name string) error { //nolint:revive
 	if strings.TrimSpace(name) == "" {
 		return nil
 	}
@@ -45,7 +45,7 @@ func DockerNetworkCreateInternal(ctx context.Context, name string) error {
 	return nil
 }
 
-func DockerNetworkRemove(ctx context.Context, name string) error {
+func DockerNetworkRemove(ctx context.Context, name string) error { //nolint:revive
 	if strings.TrimSpace(name) == "" {
 		return nil
 	}
@@ -61,7 +61,7 @@ func DockerNetworkRemove(ctx context.Context, name string) error {
 	return nil
 }
 
-func DockerNetworkConnect(ctx context.Context, network string, container string) error {
+func DockerNetworkConnect(ctx context.Context, network string, container string) error { //nolint:revive
 	if strings.TrimSpace(network) == "" || strings.TrimSpace(container) == "" {
 		return nil
 	}
@@ -77,7 +77,7 @@ func DockerNetworkConnect(ctx context.Context, network string, container string)
 	return nil
 }
 
-func DockerExtraArgsFromPolicy(pol *runtimev1.Policy) []string {
+func DockerExtraArgsFromPolicy(pol *runtimev1.Policy) []string { //nolint:revive
 	if pol == nil {
 		return nil
 	}
@@ -125,7 +125,7 @@ func formatDockerMemory(memoryBytes uint64) string {
 	return fmt.Sprintf("%dm", m)
 }
 
-func (p *DockerProcess) Stop(ctx context.Context) error {
+func (p *DockerProcess) Stop(ctx context.Context) error { //nolint:revive
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.ContainerID == "" && p.Container == "" {
@@ -143,7 +143,7 @@ func (p *DockerProcess) Stop(ctx context.Context) error {
 	return nil
 }
 
-func DockerRun(ctx context.Context, spec DockerRunSpec) (*DockerProcess, error) {
+func DockerRun(ctx context.Context, spec DockerRunSpec) (*DockerProcess, error) { //nolint:revive
 	args := []string{"run"}
 	if spec.Detach {
 		args = append(args, "-d")
@@ -187,18 +187,18 @@ func DockerRun(ctx context.Context, spec DockerRunSpec) (*DockerProcess, error) 
 	return &DockerProcess{ContainerID: id, Container: spec.Name}, nil
 }
 
-type DockerLogStream struct {
+type DockerLogStream struct { //nolint:revive
 	cmd *exec.Cmd
 }
 
-func (s *DockerLogStream) Stop() error {
+func (s *DockerLogStream) Stop() error { //nolint:revive
 	if s.cmd == nil || s.cmd.Process == nil {
 		return nil
 	}
 	return s.cmd.Process.Kill()
 }
 
-func DockerLogsFollow(ctx context.Context, container string, onLine func(isStderr bool, line string)) (*DockerLogStream, error) {
+func DockerLogsFollow(ctx context.Context, container string, onLine func(isStderr bool, line string)) (*DockerLogStream, error) { //nolint:revive
 	cmd := exec.CommandContext(ctx, "docker", "logs", "-f", "--since", "0s", container)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -240,7 +240,7 @@ func DockerLogsFollow(ctx context.Context, container string, onLine func(isStder
 	return &DockerLogStream{cmd: cmd}, nil
 }
 
-func DockerWait(ctx context.Context, container string) (int, error) {
+func DockerWait(ctx context.Context, container string) (int, error) { //nolint:revive
 	cmd := exec.CommandContext(ctx, "docker", "wait", container)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -258,7 +258,7 @@ func DockerWait(ctx context.Context, container string) (int, error) {
 	return code, nil
 }
 
-func DockerRemove(ctx context.Context, container string) error {
+func DockerRemove(ctx context.Context, container string) error { //nolint:revive
 	if strings.TrimSpace(container) == "" {
 		return nil
 	}

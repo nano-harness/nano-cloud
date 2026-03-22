@@ -7,46 +7,6 @@ import (
 	"strings"
 )
 
-type workerEnrollRequest struct {
-	EnrollToken string   `json:"enroll_token"`
-	WorkerID    string   `json:"worker_id,omitempty"`
-	Labels      []string `json:"labels,omitempty"`
-}
-
-type workerEnrollResponse struct {
-	WorkerID      string `json:"worker_id"`
-	WorkerToken   string `json:"worker_token"`
-	ConfigVersion string `json:"config_version"`
-}
-
-func (s *GatewayServer) handleWorkerEnroll(w http.ResponseWriter, r *http.Request) {
-	var req workerEnrollRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
-	}
-
-	workerID, workerToken, version, err := s.configStore.ConsumeEnrollToken(req.EnrollToken, req.WorkerID, req.Labels)
-	if err != nil {
-		switch {
-		case errors.Is(err, errUnauthorized):
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		case errors.Is(err, errConflict):
-			http.Error(w, "Conflict", http.StatusConflict)
-		default:
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		}
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(workerEnrollResponse{
-		WorkerID:      workerID,
-		WorkerToken:   workerToken,
-		ConfigVersion: version,
-	})
-}
-
 type workerGetConfigResponse struct {
 	WorkerConfigYAML string `json:"worker_config_yaml"`
 	AgentConfigYAML  string `json:"agent_config_yaml,omitempty"`

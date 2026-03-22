@@ -1,0 +1,45 @@
+relay_url: ""
+enroll_token: ""
+token: ""
+worker_id: b0cf8eef-c08b-4aae-8309-b8b8155599e8
+name: nano-worker
+version: "2.0"
+labels: []
+workspace_root: ""
+host_workspace_root: ""
+state_dir: ""
+env_passthrough:
+- NANO_API_KEY
+- OPENAI_API_KEY
+- ANTHROPIC_API_KEY
+agent_config_path: ""
+runtimes:
+  claude_code:
+    runner: ""
+    image: nano-cli-runtime:local
+    command: []
+    env:
+      RUNTIME_BIN: claude
+    env_file: ""
+  custom:
+    runner: ""
+    image: nano-cli-runtime:local
+    command: []
+    env:
+      RUNTIME_BIN: /bin/echo
+    env_file: ""
+  nano_agent:
+    runner: ""
+    image: nano-agent-runtime:local
+    command: []
+    env: {}
+    env_file: ""
+  opencode:
+    runner: ""
+    image: nano-cli-runtime:local
+    command: []
+    env:
+      RUNTIME_BIN: opencode
+    env_file: ""
+network_policy_image: ""
+network_allowlist: []

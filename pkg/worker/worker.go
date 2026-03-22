@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,13 +19,20 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nano-harness/nano-cloud/pkg/worker/runtime"
 	runtimev1 "github.com/nano-harness/nano-cloud/proto/runtime/v1"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
 )
 
-type Worker struct {
+const (
+	writeWait  = 10 * time.Second
+	pongWait   = 60 * time.Second
+	pingPeriod = (pongWait * 9) / 10
+)
+
+type Worker struct { //nolint:revive
 	cfgMu  sync.RWMutex
 	cfg    *Config
 	logger *logrus.Logger
@@ -48,7 +56,7 @@ type runState struct {
 	cmd      *exec.Cmd
 }
 
-func New(cfg *Config) *Worker {
+func New(cfg *Config) *Worker { //nolint:revive
 	l := logrus.New()
 	return &Worker{
 		cfg:    cfg,
@@ -85,6 +93,14 @@ func (w *Worker) dial(ctx context.Context) (*websocket.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Normalize port: default to 8081 when none is specified, consistent with
+	// httpBaseURLFromRelayURL and normalize_relay_url in connect.sh.  Without
+	// this, a portless relay URL would fall back to the scheme default (80 for
+	// ws://, 443 for wss://) instead of the gateway's standard port, causing a
+	// 502 error on the WebSocket handshake.
+	if u.Port() == "" && u.Hostname() != "" {
+		u.Host = net.JoinHostPort(u.Hostname(), "8081")
+	}
 	u.Path = "/v1/worker/connect"
 	dialer := websocket.Dialer{}
 	headers := http.Header{}
@@ -98,13 +114,13 @@ func (w *Worker) dial(ctx context.Context) (*websocket.Conn, error) {
 	return conn, nil
 }
 
-func (w *Worker) Start(ctx context.Context) error {
+func (w *Worker) Start(ctx context.Context) error { //nolint:revive
 	w.cfgMu.Lock()
 	if w.cfg.WorkerID == "" {
 		w.cfg.WorkerID = fmt.Sprintf("worker-%d", time.Now().UnixNano())
 	}
 	if w.cfg.Name == "" {
-		w.cfg.Name = fmt.Sprintf("nano-sandbox-%s", w.cfg.WorkerID)
+		w.cfg.Name = fmt.Sprintf("nano-sandbox-%s", runtime.Sanitize(w.cfg.WorkerID))
 	}
 	if w.cfg.Version == "" {
 		w.cfg.Version = "1.0"
@@ -119,11 +135,72 @@ func (w *Worker) Start(ctx context.Context) error {
 		return err
 	}
 
+	if w.cfg.StateDir != "" {
+		go w.remoteConfigLoop(ctx)
+	}
+
+	backoff := 1 * time.Second
+	maxBackoff := 30 * time.Second
+
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		err := w.connectAndServe(ctx)
+		if err == nil {
+			return nil
+		}
+		w.logger.Errorf("Worker disconnected: %v. Reconnecting in %v...", err, backoff)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+func (w *Worker) connectAndServe(parentCtx context.Context) error {
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
 	conn, err := w.dial(ctx)
 	if err != nil {
 		return err
 	}
+	w.writeMu.Lock()
 	w.conn = conn
+	w.writeMu.Unlock()
+	defer conn.Close() //nolint:errcheck
+
+	conn.SetReadDeadline(time.Now().Add(pongWait))                                                         //nolint:errcheck
+	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(pongWait)); return nil }) //nolint:errcheck
+
+	go func() {
+		ticker := time.NewTicker(pingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				w.writeMu.Lock()
+				conn.SetWriteDeadline(time.Now().Add(writeWait)) //nolint:errcheck
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					w.writeMu.Unlock()
+					return
+				}
+				w.writeMu.Unlock()
+			}
+		}
+	}()
+
 	cfg := w.getConfig()
 
 	hello := &runtimev1.WorkerHello{
@@ -140,20 +217,18 @@ func (w *Worker) Start(ctx context.Context) error {
 		Seq:             w.nextSeq(),
 		Message:         &runtimev1.Envelope_WorkerHello{WorkerHello: hello},
 	}); err != nil {
-		_ = conn.Close()
 		return err
 	}
 
 	go w.heartbeatLoop(ctx)
-	if cfg.StateDir != "" {
-		go w.remoteConfigLoop(ctx)
-	}
 
 	for {
 		env, err := w.readEnvelope()
 		if err != nil {
 			return err
 		}
+		conn.SetReadDeadline(time.Now().Add(pongWait)) //nolint:errcheck
+
 		if req := env.GetRunRequest(); req != nil {
 			streamID := env.StreamId
 			if streamID == "" {
@@ -221,6 +296,20 @@ func (w *Worker) supportedRuntimes() []runtimev1.Runtime {
 		return []runtimev1.Runtime{runtimev1.Runtime_RUNTIME_CUSTOM}
 	}
 	return runtimes
+}
+
+func resolveHostBindPath(hostRoot string, containerRoot string, containerPath string) (string, error) {
+	if hostRoot == "" || containerRoot == "" || containerPath == "" {
+		return "", nil
+	}
+	rel, err := filepath.Rel(containerRoot, containerPath)
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return "", fmt.Errorf("path %s is outside container root %s", containerPath, containerRoot)
+	}
+	return filepath.Join(hostRoot, rel), nil
 }
 
 func (w *Worker) heartbeatLoop(ctx context.Context) {
@@ -311,7 +400,7 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 	if workspaceID == "" {
 		workspaceID = streamID
 	}
-	workspaceDir := filepath.Join(cfg.WorkspaceRoot, sanitize(workspaceID))
+	workspaceDir := filepath.Join(cfg.WorkspaceRoot, runtime.Sanitize(workspaceID))
 	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 		_ = w.sendError(streamID, "WORKSPACE_CREATE_FAILED", err.Error(), "")
 		_ = w.sendCompleted(streamID, false, 1, "")
@@ -331,32 +420,66 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 		return
 	}
 
-	prompt := extractPrompt(req.GetInput())
-	env := map[string]string{
-		"STREAM_ID":  streamID,
-		"SESSION_ID": req.SessionId,
-		"PROMPT":     prompt,
+	// Runtime Adapter Selection
+	var adapter runtime.RuntimeAdapter
+	baseAdapter := runtime.BaseAdapter{
+		Image:   runtimeCfg.Image,
+		Command: runtimeCfg.Command,
+		Env:     runtimeCfg.Env,
 	}
-	if pol := req.GetPolicy(); pol != nil {
-		if pol.TimeoutSeconds > 0 {
-			env["TIMEOUT_SECONDS"] = fmt.Sprintf("%d", pol.TimeoutSeconds)
-		}
-		switch pol.Approval {
-		case runtimev1.ApprovalPolicy_APPROVAL_POLICY_AUTO:
-			env["APPROVAL_POLICY"] = "auto"
-		case runtimev1.ApprovalPolicy_APPROVAL_POLICY_DENY:
-			env["APPROVAL_POLICY"] = "deny"
-		case runtimev1.ApprovalPolicy_APPROVAL_POLICY_ASK:
-			env["APPROVAL_POLICY"] = "ask"
-		}
-	}
-	for k, v := range runtimeCfg.Env {
-		env[k] = v
-	}
+
+	// Add EnvPassthrough to base adapter env
 	for _, k := range cfg.EnvPassthrough {
 		if v := os.Getenv(k); v != "" {
-			env[k] = v
+			if baseAdapter.Env == nil {
+				baseAdapter.Env = make(map[string]string)
+			}
+			baseAdapter.Env[k] = v
 		}
+	}
+
+	if runtimeKey == "nano_agent" {
+		adapter = &runtime.NanoAgentAdapter{
+			BaseAdapter: baseAdapter,
+			EnvFile:     runtimeCfg.EnvFile,
+		}
+	} else {
+		adapter = &baseAdapter
+	}
+
+	var runHostWorkspacePath string
+	if cfg.HostWorkspaceRoot != "" {
+		hostPath, hostErr := resolveHostBindPath(cfg.HostWorkspaceRoot, cfg.WorkspaceRoot, workspaceDir)
+		if hostErr == nil {
+			runHostWorkspacePath = hostPath
+		} else {
+			w.logger.Warnf("failed to resolve host path for workspace: %v", hostErr)
+		}
+	}
+
+	runHostAgentConfigPath := cfg.AgentConfigPath
+	if cfg.HostStateRoot != "" && cfg.StateDir != "" && cfg.AgentConfigPath != "" {
+		hostCfgPath, hostErr := resolveHostBindPath(cfg.HostStateRoot, cfg.StateDir, cfg.AgentConfigPath)
+		if hostErr == nil {
+			runHostAgentConfigPath = hostCfgPath
+		} else {
+			w.logger.Warnf("failed to resolve host path for agent config: %v", hostErr)
+		}
+	}
+
+	spec, err := adapter.BuildSpec(ctx, req, runtime.ContextInfo{
+		StreamID:          streamID,
+		WorkspaceDir:      workspaceDir,
+		HostWorkspacePath: runHostWorkspacePath,
+		WorkerID:          cfg.WorkerID,
+		AgentConfigPath:   runHostAgentConfigPath,
+	})
+	if err != nil {
+		_ = w.sendError(streamID, "RUNTIME_SPEC_BUILD_FAILED", err.Error(), "")
+		if rs.done.CompareAndSwap(false, true) {
+			_ = w.sendCompleted(streamID, false, 2, "")
+		}
+		return
 	}
 
 	runner := strings.ToLower(strings.TrimSpace(runtimeCfg.Runner))
@@ -364,21 +487,11 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 		runner = "docker"
 	}
 
-	cmd := runtimeCfg.Command
+	containerName := fmt.Sprintf("%s-%s", runtime.Sanitize(cfg.WorkerID), runtime.Sanitize(streamID))
+	env := spec.Env
+	cmd := spec.Command
+	mounts := spec.Mounts
 
-	mounts := map[string]string{
-		workspaceDir: "/workspace",
-	}
-	if cfg.AgentConfigPath != "" {
-		absPath, err := filepath.Abs(cfg.AgentConfigPath)
-		if err == nil {
-			mounts[absPath] = "/root/.config/nano/config.yaml"
-		} else {
-			w.logger.Warnf("failed to resolve agent config path: %v", err)
-		}
-	}
-
-	containerName := fmt.Sprintf("%s-%s", sanitize(cfg.WorkerID), sanitize(streamID))
 	if runner == "exec" {
 		if len(cmd) == 0 {
 			_ = w.sendError(streamID, "EXEC_COMMAND_EMPTY", fmt.Sprintf("runtime=%s", runtimeKey), "")
@@ -501,6 +614,14 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 		rs.netName = netName
 
 		allowlistHostPath := filepath.Join(workspaceDir, ".nano-allowlist.json")
+		allowlistMountPath := allowlistHostPath
+		if cfg.HostWorkspaceRoot != "" {
+			if rel, relErr := filepath.Rel(cfg.WorkspaceRoot, workspaceDir); relErr == nil {
+				allowlistMountPath = filepath.Join(cfg.HostWorkspaceRoot, rel, ".nano-allowlist.json")
+			} else {
+				w.logger.Warnf("failed to resolve host path for allowlist: %v", relErr)
+			}
+		}
 		b, err := json.Marshal(cfg.NetworkAllowlist)
 		if err != nil {
 			_ = w.sendError(streamID, "NETWORK_ALLOWLIST_INVALID", err.Error(), "")
@@ -524,7 +645,7 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 			Name:    proxyName,
 			Detach:  true,
 			Remove:  false,
-			Mounts:  map[string]string{allowlistHostPath: "/etc/nano/allowlist.json"},
+			Mounts:  map[string]string{allowlistMountPath: "/etc/nano/allowlist.json"},
 			Command: []string{"-listen", ":3128", "-allowlist", "/etc/nano/allowlist.json"},
 			ExtraArgs: []string{
 				"--network", netName,
@@ -687,6 +808,11 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 }
 
 func (w *Worker) sendStatus(streamID string, status string, detail string) error {
+	w.logger.WithFields(logrus.Fields{
+		"stream_id": streamID,
+		"status":    status,
+		"detail":    detail,
+	}).Info("run status")
 	return w.sendRunEvent(streamID, &runtimev1.RunEvent{
 		Kind:    runtimev1.EventKind_EVENT_KIND_STATUS,
 		Payload: &runtimev1.RunEvent_Status{Status: &runtimev1.StatusEvent{Status: status, Detail: detail}},
@@ -701,6 +827,11 @@ func (w *Worker) sendAssistantDelta(streamID string, text string) error {
 }
 
 func (w *Worker) sendCompleted(streamID string, success bool, exitCode int32, statsJSON string) error {
+	w.logger.WithFields(logrus.Fields{
+		"stream_id": streamID,
+		"success":   success,
+		"exit_code": exitCode,
+	}).Info("run completed")
 	return w.sendRunEvent(streamID, &runtimev1.RunEvent{
 		Kind: runtimev1.EventKind_EVENT_KIND_COMPLETED,
 		Payload: &runtimev1.RunEvent_Completed{Completed: &runtimev1.CompletedEvent{
@@ -712,6 +843,11 @@ func (w *Worker) sendCompleted(streamID string, success bool, exitCode int32, st
 }
 
 func (w *Worker) sendError(streamID string, code string, message string, detailsJSON string) error {
+	w.logger.WithFields(logrus.Fields{
+		"stream_id": streamID,
+		"code":      code,
+		"message":   message,
+	}).Error("run error")
 	return w.sendRunEvent(streamID, &runtimev1.RunEvent{
 		Kind: runtimev1.EventKind_EVENT_KIND_ERROR,
 		Payload: &runtimev1.RunEvent_Error{Error: &runtimev1.Error{
@@ -756,39 +892,4 @@ func (w *Worker) readEnvelope() (*runtimev1.Envelope, error) {
 		return nil, err
 	}
 	return &env, nil
-}
-
-func extractPrompt(in *runtimev1.Input) string {
-	if in == nil {
-		return ""
-	}
-	for i := len(in.Messages) - 1; i >= 0; i-- {
-		m := in.Messages[i]
-		if m.Role == runtimev1.Role_ROLE_USER {
-			return m.Content
-		}
-	}
-	if len(in.Messages) > 0 {
-		return in.Messages[len(in.Messages)-1].Content
-	}
-	return ""
-}
-
-func sanitize(s string) string {
-	s = strings.ToLower(s)
-	s = strings.ReplaceAll(s, " ", "-")
-	s = strings.ReplaceAll(s, "/", "-")
-	s = strings.ReplaceAll(s, ":", "-")
-	s = strings.ReplaceAll(s, ".", "-")
-	var b strings.Builder
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			b.WriteRune(r)
-		}
-	}
-	out := b.String()
-	if out == "" {
-		return "x"
-	}
-	return out
 }

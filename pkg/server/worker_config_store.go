@@ -16,35 +16,24 @@ import (
 	"time"
 
 	"github.com/nano-harness/nano-cloud/pkg/worker"
-	"github.com/google/uuid"
 	"gopkg.in/yaml.v2"
 )
 
 var (
 	errUnauthorized = errors.New("unauthorized")
-	errConflict     = errors.New("conflict")
+	errConflict     = errors.New("conflict") //nolint:unused
 	errNotFound     = errors.New("not found")
 	errInvalid      = errors.New("invalid")
 )
 
+// WorkerConfigStore manages worker configurations
 type WorkerConfigStore struct {
 	dir string
 	mu  sync.Mutex
 }
 
-type enrollTokenRecord struct {
-	Token         string `json:"token"`
-	ExpiresAtUnix int64  `json:"expires_at_unix,omitempty"`
-	Revoked       bool   `json:"revoked,omitempty"`
-	UsedAtUnix    int64  `json:"used_at_unix,omitempty"`
-	UsedBy        string `json:"used_by,omitempty"`
-}
-
-type enrollTokensFile struct {
-	Tokens []enrollTokenRecord `json:"tokens"`
-}
-
-type workerRecord struct {
+// WorkerRecord represents a worker configuration record
+type WorkerRecord struct {
 	WorkerID             string   `json:"worker_id"`
 	WorkerTokenHash      string   `json:"worker_token_hash"`
 	Labels               []string `json:"labels,omitempty"`
@@ -60,11 +49,7 @@ type workerIndexFile struct {
 	TokenHashToWorkerID map[string]string `json:"token_hash_to_worker_id"`
 }
 
-type CreateEnrollTokenResult struct {
-	Token         string `json:"token"`
-	ExpiresAtUnix int64  `json:"expires_at_unix,omitempty"`
-}
-
+// NewWorkerConfigStore creates a new WorkerConfigStore
 func NewWorkerConfigStore(dir string) (*WorkerConfigStore, error) {
 	if dir == "" {
 		dir = "./data"
@@ -81,12 +66,14 @@ func (s *WorkerConfigStore) ensureLayout() error {
 	if err := os.MkdirAll(filepath.Join(s.dir, "workers"), 0o755); err != nil {
 		return err
 	}
-	if err := s.ensureJSONFile(filepath.Join(s.dir, "enroll_tokens.json"), enrollTokensFile{Tokens: []enrollTokenRecord{}}); err != nil {
+	if err := s.ensureJSONFile(filepath.Join(s.dir, "pairing_requests.json"), pairingRequestsFile{Requests: []PairingRequest{}}); err != nil {
 		return err
 	}
 	if err := s.ensureJSONFile(filepath.Join(s.dir, "worker_index.json"), workerIndexFile{TokenHashToWorkerID: map[string]string{}}); err != nil {
 		return err
 	}
+	// Cleanup old enroll_tokens.json if exists
+	_ = os.Remove(filepath.Join(s.dir, "enroll_tokens.json"))
 	return nil
 }
 
@@ -99,73 +86,8 @@ func (s *WorkerConfigStore) ensureJSONFile(path string, v any) error {
 	return writeJSONAtomic(path, v)
 }
 
-func (s *WorkerConfigStore) CreateEnrollToken(ttlSeconds int64) (CreateEnrollTokenResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	token, err := generateToken()
-	if err != nil {
-		return CreateEnrollTokenResult{}, err
-	}
-	now := time.Now().Unix()
-	var exp int64
-	if ttlSeconds > 0 {
-		exp = now + ttlSeconds
-	}
-
-	var toks enrollTokensFile
-	if err := readJSON(filepath.Join(s.dir, "enroll_tokens.json"), &toks); err != nil {
-		return CreateEnrollTokenResult{}, err
-	}
-	toks.Tokens = append(toks.Tokens, enrollTokenRecord{
-		Token:         token,
-		ExpiresAtUnix: exp,
-	})
-	if err := writeJSONAtomic(filepath.Join(s.dir, "enroll_tokens.json"), &toks); err != nil {
-		return CreateEnrollTokenResult{}, err
-	}
-	return CreateEnrollTokenResult{Token: token, ExpiresAtUnix: exp}, nil
-}
-
-func (s *WorkerConfigStore) ListEnrollTokens() ([]enrollTokenRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var toks enrollTokensFile
-	if err := readJSON(filepath.Join(s.dir, "enroll_tokens.json"), &toks); err != nil {
-		return nil, err
-	}
-	out := make([]enrollTokenRecord, 0, len(toks.Tokens))
-	out = append(out, toks.Tokens...)
-	return out, nil
-}
-
-func (s *WorkerConfigStore) RevokeEnrollToken(token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if token == "" {
-		return errInvalid
-	}
-	var toks enrollTokensFile
-	if err := readJSON(filepath.Join(s.dir, "enroll_tokens.json"), &toks); err != nil {
-		return err
-	}
-	found := false
-	for i := range toks.Tokens {
-		if toks.Tokens[i].Token == token {
-			toks.Tokens[i].Revoked = true
-			found = true
-			break
-		}
-	}
-	if !found {
-		return errNotFound
-	}
-	return writeJSONAtomic(filepath.Join(s.dir, "enroll_tokens.json"), &toks)
-}
-
-func (s *WorkerConfigStore) ListWorkers() ([]workerRecord, error) {
+// ListWorkers returns all workers
+func (s *WorkerConfigStore) ListWorkers() ([]WorkerRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -173,7 +95,7 @@ func (s *WorkerConfigStore) ListWorkers() ([]workerRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]workerRecord, 0, len(entries))
+	out := make([]WorkerRecord, 0, len(entries))
 	for _, ent := range entries {
 		if ent.IsDir() {
 			continue
@@ -182,7 +104,7 @@ func (s *WorkerConfigStore) ListWorkers() ([]workerRecord, error) {
 		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		var rec workerRecord
+		var rec WorkerRecord
 		if err := readJSON(filepath.Join(s.dir, "workers", name), &rec); err != nil {
 			continue
 		}
@@ -199,7 +121,8 @@ func (s *WorkerConfigStore) ListWorkers() ([]workerRecord, error) {
 	return out, nil
 }
 
-func (s *WorkerConfigStore) GetWorker(workerID string) (*workerRecord, error) {
+// GetWorker returns a worker by ID
+func (s *WorkerConfigStore) GetWorker(workerID string) (*WorkerRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -207,7 +130,7 @@ func (s *WorkerConfigStore) GetWorker(workerID string) (*workerRecord, error) {
 		return nil, errInvalid
 	}
 	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
-	var rec workerRecord
+	var rec WorkerRecord
 	if err := readJSON(workerPath, &rec); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, errNotFound
@@ -220,7 +143,8 @@ func (s *WorkerConfigStore) GetWorker(workerID string) (*workerRecord, error) {
 	return &rec, nil
 }
 
-func (s *WorkerConfigStore) UpdateWorkerConfig(workerID string, workerConfigYAML *string, agentConfigYAML *string) (*workerRecord, error) {
+// UpdateWorkerConfig updates a worker's configuration
+func (s *WorkerConfigStore) UpdateWorkerConfig(workerID string, workerConfigYAML *string, agentConfigYAML *string) (*WorkerRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -228,7 +152,7 @@ func (s *WorkerConfigStore) UpdateWorkerConfig(workerID string, workerConfigYAML
 		return nil, errInvalid
 	}
 	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
-	var rec workerRecord
+	var rec WorkerRecord
 	if err := readJSON(workerPath, &rec); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, errNotFound
@@ -265,7 +189,8 @@ func (s *WorkerConfigStore) UpdateWorkerConfig(workerID string, workerConfigYAML
 	return &rec, nil
 }
 
-func (s *WorkerConfigStore) RotateWorkerToken(workerID string) (string, *workerRecord, error) {
+// RotateWorkerToken rotates a worker's token
+func (s *WorkerConfigStore) RotateWorkerToken(workerID string) (string, *WorkerRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -273,7 +198,7 @@ func (s *WorkerConfigStore) RotateWorkerToken(workerID string) (string, *workerR
 		return "", nil, errInvalid
 	}
 	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
-	var rec workerRecord
+	var rec WorkerRecord
 	if err := readJSON(workerPath, &rec); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", nil, errNotFound
@@ -309,93 +234,8 @@ func (s *WorkerConfigStore) RotateWorkerToken(workerID string) (string, *workerR
 	return newToken, &rec, nil
 }
 
-func (s *WorkerConfigStore) ConsumeEnrollToken(enrollToken string, workerID string, labels []string) (newWorkerID string, workerToken string, configVersion string, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if enrollToken == "" {
-		return "", "", "", errUnauthorized
-	}
-
-	var toks enrollTokensFile
-	if err := readJSON(filepath.Join(s.dir, "enroll_tokens.json"), &toks); err != nil {
-		return "", "", "", err
-	}
-
-	now := time.Now().Unix()
-	idx := -1
-	for i := range toks.Tokens {
-		if toks.Tokens[i].Token == enrollToken {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return "", "", "", errUnauthorized
-	}
-	t := toks.Tokens[idx]
-	if t.Revoked {
-		return "", "", "", errUnauthorized
-	}
-	if t.ExpiresAtUnix > 0 && now > t.ExpiresAtUnix {
-		return "", "", "", errUnauthorized
-	}
-	if t.UsedAtUnix > 0 || t.UsedBy != "" {
-		return "", "", "", errUnauthorized
-	}
-
-	if workerID == "" {
-		workerID = uuid.NewString()
-	}
-	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
-	if _, err := os.Stat(workerPath); err == nil {
-		return "", "", "", errConflict
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", "", "", err
-	}
-
-	workerToken, err = generateToken()
-	if err != nil {
-		return "", "", "", err
-	}
-	tokenHash := hashToken(workerToken)
-
-	rec := &workerRecord{
-		WorkerID:        workerID,
-		WorkerTokenHash: tokenHash,
-		Labels:          labels,
-		CreatedAtUnix:   now,
-		UpdatedAtUnix:   now,
-	}
-	if _, err := s.ensureWorkerConfigLocked(rec); err != nil {
-		return "", "", "", err
-	}
-
-	toks.Tokens[idx].UsedAtUnix = now
-	toks.Tokens[idx].UsedBy = workerID
-	if err := writeJSONAtomic(filepath.Join(s.dir, "enroll_tokens.json"), &toks); err != nil {
-		return "", "", "", err
-	}
-
-	var index workerIndexFile
-	if err := readJSON(filepath.Join(s.dir, "worker_index.json"), &index); err != nil {
-		return "", "", "", err
-	}
-	if index.TokenHashToWorkerID == nil {
-		index.TokenHashToWorkerID = map[string]string{}
-	}
-	index.TokenHashToWorkerID[tokenHash] = workerID
-	if err := writeJSONAtomic(filepath.Join(s.dir, "worker_index.json"), &index); err != nil {
-		return "", "", "", err
-	}
-
-	if err := writeJSONAtomic(workerPath, rec); err != nil {
-		return "", "", "", err
-	}
-	return rec.WorkerID, workerToken, rec.ConfigVersion, nil
-}
-
-func (s *WorkerConfigStore) GetConfigByWorkerToken(workerToken string) (*workerRecord, error) {
+// GetConfigByWorkerToken returns a worker's config by token
+func (s *WorkerConfigStore) GetConfigByWorkerToken(workerToken string) (*WorkerRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -413,7 +253,7 @@ func (s *WorkerConfigStore) GetConfigByWorkerToken(workerToken string) (*workerR
 		return nil, errUnauthorized
 	}
 	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
-	var rec workerRecord
+	var rec WorkerRecord
 	if err := readJSON(workerPath, &rec); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, errUnauthorized
@@ -434,6 +274,7 @@ func (s *WorkerConfigStore) GetConfigByWorkerToken(workerToken string) (*workerR
 	return &rec, nil
 }
 
+// AckAppliedConfig acknowledges that a config version has been applied
 func (s *WorkerConfigStore) AckAppliedConfig(workerToken string, appliedVersion string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -452,7 +293,7 @@ func (s *WorkerConfigStore) AckAppliedConfig(workerToken string, appliedVersion 
 		return errUnauthorized
 	}
 	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
-	var rec workerRecord
+	var rec WorkerRecord
 	if err := readJSON(workerPath, &rec); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return errUnauthorized
@@ -471,7 +312,39 @@ func (s *WorkerConfigStore) AckAppliedConfig(workerToken string, appliedVersion 
 	return writeJSONAtomic(workerPath, &rec)
 }
 
-func (s *WorkerConfigStore) ensureWorkerConfigLocked(rec *workerRecord) (bool, error) {
+// DeleteWorker deletes a worker by ID
+func (s *WorkerConfigStore) DeleteWorker(workerID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if workerID == "" {
+		return errInvalid
+	}
+
+	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
+	var rec WorkerRecord
+	if err := readJSON(workerPath, &rec); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errNotFound
+		}
+		return err
+	}
+
+	// Remove from index
+	var index workerIndexFile
+	if err := readJSON(filepath.Join(s.dir, "worker_index.json"), &index); err == nil {
+		if index.TokenHashToWorkerID != nil {
+			if rec.WorkerTokenHash != "" {
+				delete(index.TokenHashToWorkerID, rec.WorkerTokenHash)
+				_ = writeJSONAtomic(filepath.Join(s.dir, "worker_index.json"), &index)
+			}
+		}
+	}
+
+	return os.Remove(workerPath)
+}
+
+func (s *WorkerConfigStore) ensureWorkerConfigLocked(rec *WorkerRecord) (bool, error) {
 	now := time.Now().Unix()
 	changed := false
 	if rec.WorkerConfigYAML == "" {
@@ -507,6 +380,12 @@ func (s *WorkerConfigStore) ensureWorkerConfigLocked(rec *workerRecord) (bool, e
 			return false, err
 		}
 		rec.WorkerConfigYAML = string(b)
+		rec.UpdatedAtUnix = now
+		changed = true
+	}
+
+	if rec.AgentConfigYAML == "" {
+		rec.AgentConfigYAML = "cli:\n  claude_code:\n    env:\n      ANTHROPIC_API_KEY: \"${ANTHROPIC_API_KEY}\"\n    args: [\"--model\", \"claude-3-7-sonnet\"]\n  opencode:\n    env:\n      OPENAI_API_KEY: \"${OPENAI_API_KEY}\"\n    args: [\"--model\", \"gpt-4o-mini\"]\n"
 		rec.UpdatedAtUnix = now
 		changed = true
 	}

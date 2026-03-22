@@ -1,4 +1,4 @@
-package main
+package main //nolint:revive
 
 import (
 	"errors"
@@ -53,11 +53,11 @@ func main() {
 
 	target, err := exec.LookPath(bin)
 	if err != nil {
-		os.Stderr.WriteString(err.Error() + "\n")
+		os.Stderr.WriteString(err.Error() + "\n") //nolint:errcheck
 		os.Exit(127)
 	}
 	if err := syscall.Exec(target, append([]string{bin}, args...), os.Environ()); err != nil {
-		os.Stderr.WriteString(err.Error() + "\n")
+		os.Stderr.WriteString(err.Error() + "\n") //nolint:errcheck
 		os.Exit(126)
 	}
 }

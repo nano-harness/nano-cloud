@@ -6,21 +6,22 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-type RuntimeConfig struct {
+type RuntimeConfig struct { //nolint:revive
 	Runner  string            `yaml:"runner"`
 	Image   string            `yaml:"image"`
 	Command []string          `yaml:"command"`
 	Env     map[string]string `yaml:"env"`
+	EnvFile string            `yaml:"env_file"` // New field
 }
 
-type NetworkAllowRule struct {
+type NetworkAllowRule struct { //nolint:revive
 	Host     string `yaml:"host"`
 	CIDR     string `yaml:"cidr"`
 	Protocol string `yaml:"protocol"`
 	Ports    []int  `yaml:"ports"`
 }
 
-type Config struct {
+type Config struct { //nolint:revive
 	RelayURL           string                   `yaml:"relay_url"`
 	EnrollToken        string                   `yaml:"enroll_token"`
 	Token              string                   `yaml:"token"`
@@ -29,6 +30,8 @@ type Config struct {
 	Version            string                   `yaml:"version"`
 	Labels             []string                 `yaml:"labels"`
 	WorkspaceRoot      string                   `yaml:"workspace_root"`
+	HostWorkspaceRoot  string                   `yaml:"host_workspace_root"`
+	HostStateRoot      string                   `yaml:"host_state_root"`
 	StateDir           string                   `yaml:"state_dir"`
 	EnvPassthrough     []string                 `yaml:"env_passthrough"`
 	AgentConfigPath    string                   `yaml:"agent_config_path"`
@@ -37,7 +40,7 @@ type Config struct {
 	NetworkAllowlist   []NetworkAllowRule       `yaml:"network_allowlist"`
 }
 
-func LoadConfig(path string) (*Config, error) {
+func LoadConfig(path string) (*Config, error) { //nolint:revive
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

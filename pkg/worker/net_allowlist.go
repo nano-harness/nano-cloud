@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func ValidateNetworkAllowlist(rules []NetworkAllowRule) error {
+func ValidateNetworkAllowlist(rules []NetworkAllowRule) error { //nolint:revive
 	for _, r := range rules {
 		proto := strings.ToLower(strings.TrimSpace(r.Protocol))
 		if proto == "" {

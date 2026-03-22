@@ -1,4 +1,4 @@
-package server
+package server //nolint:revive
 
 import (
 	"encoding/json"
@@ -13,64 +13,17 @@ func (s *GatewayServer) requireAdmin(w http.ResponseWriter, r *http.Request) boo
 		http.Error(w, "Gateway token is required", http.StatusServiceUnavailable)
 		return false
 	}
-	if parseBearerToken(r) != s.token {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return false
+	// 1. Check Bearer Token
+	if parseBearerToken(r) == s.token {
+		return true
 	}
-	return true
-}
+	// 2. Check Console Session
+	if s.consoleSessionValid(r) {
+		return true
+	}
 
-type adminCreateEnrollTokenRequest struct {
-	TTLSeconds int64 `json:"ttl_seconds,omitempty"`
-}
-
-func (s *GatewayServer) handleAdminCreateEnrollToken(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	var req adminCreateEnrollTokenRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
-
-	out, err := s.configStore.CreateEnrollToken(req.TTLSeconds)
-	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
-}
-
-func (s *GatewayServer) handleAdminListEnrollTokens(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	toks, err := s.configStore.ListEnrollTokens()
-	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"tokens": toks})
-}
-
-func (s *GatewayServer) handleAdminRevokeEnrollToken(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	token := mux.Vars(r)["token"]
-	if err := s.configStore.RevokeEnrollToken(token); err != nil {
-		switch {
-		case errors.Is(err, errNotFound):
-			http.Error(w, "Not Found", http.StatusNotFound)
-		case errors.Is(err, errInvalid):
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-		default:
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		}
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"revoked": true})
+	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	return false
 }
 
 func (s *GatewayServer) handleAdminListWorkers(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +35,16 @@ func (s *GatewayServer) handleAdminListWorkers(w http.ResponseWriter, r *http.Re
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+
+	s.mu.RLock()
+	connectedWorkers := make(map[string]bool)
+	for id, sess := range s.workers {
+		if sess != nil && sess.Hello != nil {
+			connectedWorkers[id] = true
+		}
+	}
+	s.mu.RUnlock()
+
 	out := make([]map[string]any, 0, len(list))
 	for _, rec := range list {
 		out = append(out, map[string]any{
@@ -91,10 +54,31 @@ func (s *GatewayServer) handleAdminListWorkers(w http.ResponseWriter, r *http.Re
 			"applied_config_version": rec.AppliedConfigVersion,
 			"created_at_unix":        rec.CreatedAtUnix,
 			"updated_at_unix":        rec.UpdatedAtUnix,
+			"online":                 connectedWorkers[rec.WorkerID],
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (s *GatewayServer) handleAdminDeleteWorker(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	workerID := mux.Vars(r)["id"]
+	if err := s.configStore.DeleteWorker(workerID); err != nil {
+		switch {
+		case errors.Is(err, errNotFound):
+			http.Error(w, "Not Found", http.StatusNotFound)
+		case errors.Is(err, errInvalid):
+			http.Error(w, "Bad Request", http.StatusBadRequest)
+		default:
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
 }
 
 func (s *GatewayServer) handleAdminGetWorkerConfig(w http.ResponseWriter, r *http.Request) {

@@ -11,10 +11,8 @@ import (
 )
 
 func TestConsole_AnonymousPublicView(t *testing.T) {
-	t.Setenv("CONSOLE_USERNAME", "")
-	t.Setenv("CONSOLE_PASSWORD", "")
-
-	srv := NewGatewayServerWithLogger(":0", "admin-token", t.TempDir(), logrus.New())
+	// Token is empty -> Anonymous mode
+	srv := NewGatewayServerWithLogger(":0", "", t.TempDir(), logrus.New())
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/console", nil)
 	srv.router.ServeHTTP(rec, req)
@@ -32,9 +30,7 @@ func TestConsole_AnonymousPublicView(t *testing.T) {
 }
 
 func TestConsole_LoginEnablesPrivateView(t *testing.T) {
-	t.Setenv("CONSOLE_USERNAME", "alice")
-	t.Setenv("CONSOLE_PASSWORD", "secret-pass")
-
+	// Token is "admin-token" -> Auth enabled
 	srv := NewGatewayServerWithLogger(":0", "admin-token", t.TempDir(), logrus.New())
 
 	rec := httptest.NewRecorder()
@@ -50,9 +46,9 @@ func TestConsole_LoginEnablesPrivateView(t *testing.T) {
 		t.Fatalf("private section must be hidden before login")
 	}
 
+	// Login with correct token
 	loginForm := url.Values{}
-	loginForm.Set("username", "alice")
-	loginForm.Set("password", "secret-pass")
+	loginForm.Set("token", "admin-token") // Use token field
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/console/login", strings.NewReader(loginForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -65,6 +61,7 @@ func TestConsole_LoginEnablesPrivateView(t *testing.T) {
 		t.Fatalf("expected session cookie")
 	}
 
+	// Access with session cookie
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/console", nil)
 	req.AddCookie(cookies[0])

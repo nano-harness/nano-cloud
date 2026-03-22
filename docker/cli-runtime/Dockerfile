@@ -1,10 +1,12 @@
 FROM golang:1.24-alpine AS build
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
 
 WORKDIR /src/nano-cloud
 COPY nano-cloud/go.mod nano-cloud/go.sum ./
 COPY nano-agent /src/nano-agent
-RUN go mod edit -replace github.com/nano-harness/nano-agent=/src/nano-agent
-RUN go mod download
+COPY nano-cloud/docker/common/setup-go-mod.sh /tmp/setup-go-mod.sh
+RUN chmod +x /tmp/setup-go-mod.sh && /tmp/setup-go-mod.sh
 COPY nano-cloud ./
 RUN CGO_ENABLED=0 go build -o /out/runtime-cli ./cmd/runtime-cli
 RUN CGO_ENABLED=0 go build -o /out/runtime-cli-wrapper ./cmd/runtime-cli-wrapper

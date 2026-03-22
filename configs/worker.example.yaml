@@ -10,15 +10,21 @@ version: "2.0"
 labels:
   - docker-desktop
 workspace_root: /tmp/nano-workspaces
+host_state_root: ""
 state_dir: ""
 
 # Optional: Forward environment variables from host to agent container
-# This allows you to set API keys in your shell (export NANO_API_KEY=...) 
+# This allows you to set API keys in your shell (export NANO_API_KEY=...)
 # instead of hardcoding them here.
 env_passthrough:
   - NANO_API_KEY
+  - NANO_BASE_URL
+  - NANO_MODEL
   - OPENAI_API_KEY
   - ANTHROPIC_API_KEY
+  - HTTPS_PROXY
+  - HTTP_PROXY
+  - NO_PROXY
 
 # Optional: Mount a local agent configuration file into the container
 # agent_config_path: "./agent-config.yaml"
@@ -33,6 +39,7 @@ env_passthrough:
 runtimes:
   nano_agent:
     image: nano-agent-runtime:local
+    env_file: ./nano-agent.env # Load advanced config from file
   claude_code:
     image: nano-cli-runtime:local
     env:

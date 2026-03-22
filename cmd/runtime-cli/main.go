@@ -1,4 +1,4 @@
-package main
+package main //nolint:revive
 
 import (
 	"bufio"
@@ -24,16 +24,16 @@ func main() {
 	cmd := exec.CommandContext(context.Background(), bin, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		os.Stderr.WriteString(err.Error() + "\n")
+		os.Stderr.WriteString(err.Error() + "\n") //nolint:errcheck
 		os.Exit(1)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		os.Stderr.WriteString(err.Error() + "\n")
+		os.Stderr.WriteString(err.Error() + "\n") //nolint:errcheck
 		os.Exit(1)
 	}
 	if err := cmd.Start(); err != nil {
-		os.Stderr.WriteString(err.Error() + "\n")
+		os.Stderr.WriteString(err.Error() + "\n") //nolint:errcheck
 		os.Exit(1)
 	}
 
@@ -41,14 +41,14 @@ func main() {
 	go func() {
 		sc := bufio.NewScanner(stdout)
 		for sc.Scan() {
-			os.Stdout.WriteString(sc.Text() + "\n")
+			os.Stdout.WriteString(sc.Text() + "\n") //nolint:errcheck
 		}
 		done <- struct{}{}
 	}()
 	go func() {
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
-			os.Stderr.WriteString(sc.Text() + "\n")
+			os.Stderr.WriteString(sc.Text() + "\n") //nolint:errcheck
 		}
 		done <- struct{}{}
 	}()

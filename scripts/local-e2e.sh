@@ -74,16 +74,22 @@ for i in $(seq 1 50); do
   sleep 0.1
 done
 
-echo "[4/7] create enroll token"
-ENROLL_TOKEN="$(
-  curl -sS -X POST "$GATEWAY_HTTP_BASE/v1/admin/enroll-tokens" \
-    -H "Authorization: Bearer $GATEWAY_TOKEN" \
+echo "[4/7] create pairing request (manual simulation)"
+PAIRING_SECRET="$(
+  curl -sS -X POST "$GATEWAY_HTTP_BASE/v1/worker/pairing" \
     -H "Content-Type: application/json" \
-    -d '{"ttl_seconds":3600}' | python3 -c 'import sys, json; print(json.load(sys.stdin)["token"])'
+    -d '{"worker_name":"e2e-worker","host_info":"linux/amd64","labels":["docker-desktop"]}' | python3 -c 'import sys, json; out=json.load(sys.stdin); print(out["id"] + ":" + out["secret"])'
 )"
-echo "enroll_token=$ENROLL_TOKEN"
+PAIRING_ID="${PAIRING_SECRET%:*}"
+PAIRING_KEY="${PAIRING_SECRET#*:}"
+echo "pairing_id=$PAIRING_ID"
 
-echo "[5/7] start worker (remote bootstrap)"
+echo "[4.5/7] approve pairing request"
+curl -sS -X POST "$GATEWAY_HTTP_BASE/v1/admin/pairing/$PAIRING_ID/approve" \
+  -H "Authorization: Bearer $GATEWAY_TOKEN" \
+  -H "Content-Type: application/json"
+
+echo "[5/7] start worker (remote bootstrap via pairing)"
 mkdir -p "$STATE_DIR"
 if [ -f "$NANO_AGENT_ENV_FILE" ]; then
   load_nano_agent_env_subset "$NANO_AGENT_ENV_FILE"
@@ -98,7 +104,24 @@ if [ -z "$RUNTIME" ]; then
     RUNTIME="custom"
   fi
 fi
-"$ROOT_DIR/bin/worker" -relay "ws://localhost:8081" -enroll-token "$ENROLL_TOKEN" -state-dir "$STATE_DIR" &
+
+# Pre-populate state.json to skip manual pairing in worker (since we already approved it)
+# We need to fetch the token first using the secret
+WORKER_TOKEN="$(
+  curl -sS "$GATEWAY_HTTP_BASE/v1/worker/pairing/$PAIRING_ID" \
+    -H "Authorization: Bearer $PAIRING_KEY" | python3 -c 'import sys, json; print(json.load(sys.stdin)["worker_token"])'
+)"
+echo "worker_token=$WORKER_TOKEN"
+
+cat > "$STATE_DIR/state.json" <<EOF
+{
+  "worker_id": "",
+  "worker_token": "$WORKER_TOKEN",
+  "config_version": ""
+}
+EOF
+
+"$ROOT_DIR/bin/worker" -relay "ws://localhost:8081" -state-dir "$STATE_DIR" &
 WORKER_PID=$!
 trap 'kill "$WORKER_PID" >/dev/null 2>&1 || true; kill "$GATEWAY_PID" >/dev/null 2>&1 || true' EXIT
 

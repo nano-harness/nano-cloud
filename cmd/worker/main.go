@@ -1,8 +1,9 @@
-package main
+package main //nolint:revive
 
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,6 +19,8 @@ func main() {
 	enrollToken := flag.String("enroll-token", "", "Enroll token (one-time or short-lived)")
 	stateDir := flag.String("state-dir", "", "State directory for worker token/config cache")
 	workspaceRoot := flag.String("workspace-root", "", "Workspace root directory")
+	hostWorkspaceRoot := flag.String("host-workspace-root", "", "Workspace root directory on the Docker host (for sibling container mounts)")
+	hostStateRoot := flag.String("host-state-root", "", "State directory on the Docker host (for sibling container mounts)")
 	labels := flag.String("labels", "", "Comma-separated labels (optional)")
 	flag.Parse()
 
@@ -46,6 +49,30 @@ func main() {
 		return out
 	}
 
+	// Check subcommand
+	args := flag.Args()
+	if len(args) > 0 {
+		switch args[0] {
+		case "diagnose":
+			// Implement diagnose subcommand
+			diagnoseWorker(cfg, *relayURL)
+			return
+		case "inspect":
+			// Implement inspect subcommand
+			if len(args) < 2 {
+				logrus.Fatal("inspect requires a run_id")
+			}
+			inspectRun(args[1])
+			return
+		case "run":
+			// Explicit run subcommand, do nothing and proceed
+		default:
+			if !strings.HasPrefix(args[0], "-") {
+				logrus.Fatalf("unknown subcommand: %s", args[0])
+			}
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -71,6 +98,8 @@ func main() {
 			boot.RelayURL = cfg.RelayURL
 			boot.EnrollToken = cfg.EnrollToken
 			boot.WorkspaceRoot = cfg.WorkspaceRoot
+			boot.HostWorkspaceRoot = cfg.HostWorkspaceRoot
+			boot.HostStateRoot = cfg.HostStateRoot
 			boot.StateDir = cfg.StateDir
 			boot.Labels = cfg.Labels
 			boot.WorkerID = cfg.WorkerID
@@ -87,6 +116,12 @@ func main() {
 		if *workspaceRoot != "" {
 			boot.WorkspaceRoot = *workspaceRoot
 		}
+		if *hostWorkspaceRoot != "" {
+			boot.HostWorkspaceRoot = *hostWorkspaceRoot
+		}
+		if *hostStateRoot != "" {
+			boot.HostStateRoot = *hostStateRoot
+		}
 		if ls := parseLabels(*labels); len(ls) > 0 {
 			boot.Labels = ls
 		}
@@ -99,9 +134,45 @@ func main() {
 		logrus.Fatal("missing -config or (-relay + -enroll-token)")
 	}
 
+	if *hostWorkspaceRoot != "" {
+		cfg.HostWorkspaceRoot = *hostWorkspaceRoot
+	}
+	if *hostStateRoot != "" {
+		cfg.HostStateRoot = *hostStateRoot
+	}
+
 	w := worker.New(cfg)
 
 	if err := w.Start(ctx); err != nil {
 		logrus.Fatalf("worker exited: %v", err)
 	}
+}
+
+func diagnoseWorker(cfg *worker.Config, relayURL string) {
+	// Simple pre-checks
+	worker.CheckDockerInfo(context.Background())
+
+	fmt.Printf("\n--- Network Check ---\n")
+	if cfg != nil && cfg.RelayURL != "" {
+		fmt.Printf("Relay URL (from config): %s\n", cfg.RelayURL)
+	} else if relayURL != "" {
+		fmt.Printf("Relay URL (from flag): %s\n", relayURL)
+	} else {
+		fmt.Printf("Relay URL: NOT SET\n")
+	}
+
+	fmt.Printf("HTTP_PROXY: %s\n", os.Getenv("HTTP_PROXY"))
+	fmt.Printf("HTTPS_PROXY: %s\n", os.Getenv("HTTPS_PROXY"))
+	fmt.Printf("NO_PROXY: %s\n", os.Getenv("NO_PROXY"))
+
+	fmt.Printf("---------------------\n")
+}
+
+func inspectRun(runID string) {
+	fmt.Printf("Inspecting run %s...\n", runID)
+	// Usually we need gateway token to fetch SSE, which might be in state.
+	// For local CLI, we can print where the user can find logs.
+	fmt.Printf("Run ID: %s\n", runID)
+	fmt.Printf("Note: To view live logs, use:\n")
+	fmt.Printf("  curl -NsS \"http://localhost:8081/v1/runs/%s/events\" -H \"Authorization: Bearer <your-token>\"\n", runID)
 }

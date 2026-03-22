@@ -42,33 +42,37 @@ var upgrader = websocket.Upgrader{
 
 // GatewayServer manages connections and routing
 type GatewayServer struct {
-	addr              string
-	router            *mux.Router
-	workers           map[string]*WorkerSession
-	workerQueue       map[string][]*runtimev1.Envelope
-	streamEvents      map[string][]*runtimev1.Envelope
-	streamLastAt      map[string]time.Time
-	streamDoneAt      map[string]time.Time
-	streamSubs        map[string]map[chan *runtimev1.Envelope]struct{}
-	runs              map[string]string
-	seqCounter        uint64
-	mu                sync.RWMutex
-	logger            *logrus.Logger
-	token             string
-	configStore       *WorkerConfigStore
-	consoleUsername   string
-	consolePassword   string
-	consoleSessionTTL time.Duration
-	consoleSessions   map[string]time.Time
+	addr            string
+	router          *mux.Router
+	workers         map[string]*WorkerSession
+	workerQueue     map[string][]*runtimev1.Envelope
+	streamEvents    map[string][]*runtimev1.Envelope
+	streamLastAt    map[string]time.Time
+	streamDoneAt    map[string]time.Time
+	streamSubs      map[string]map[chan *runtimev1.Envelope]struct{}
+	runs            map[string]string
+	seqCounter      uint64
+	mu              sync.RWMutex
+	logger          *logrus.Logger
+	token           string
+	configStore     *WorkerConfigStore
+	consoleSessions map[string]time.Time
 }
 
 const (
 	maxWorkerQueuePerWorker  = 1000
 	maxStreamEventsPerStream = 2000
 	streamRetention          = 10 * time.Minute
+
+	// Time allowed to write a message to the peer.
+	writeWait = 10 * time.Second
+	// Time allowed to read the next pong message from the peer.
+	pongWait = 60 * time.Second
+	// Send pings to peer with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
 )
 
-type WorkerSession struct {
+type WorkerSession struct { //nolint:revive
 	ID            string
 	Conn          *websocket.Conn
 	Hello         *runtimev1.WorkerHello
@@ -76,11 +80,11 @@ type WorkerSession struct {
 	writeMu       sync.Mutex
 }
 
-func NewGatewayServer(addr, token, configStoreDir string) *GatewayServer {
+func NewGatewayServer(addr, token, configStoreDir string) *GatewayServer { //nolint:revive
 	return NewGatewayServerWithLogger(addr, token, configStoreDir, logrus.New())
 }
 
-func NewGatewayServerWithLogger(addr, token, configStoreDir string, logger *logrus.Logger) *GatewayServer {
+func NewGatewayServerWithLogger(addr, token, configStoreDir string, logger *logrus.Logger) *GatewayServer { //nolint:revive
 	if logger == nil {
 		logger = logrus.New()
 	}
@@ -89,22 +93,19 @@ func NewGatewayServerWithLogger(addr, token, configStoreDir string, logger *logr
 		logger.WithError(err).Fatal("failed to initialize worker config store")
 	}
 	s := &GatewayServer{
-		addr:              addr,
-		router:            mux.NewRouter(),
-		workers:           make(map[string]*WorkerSession),
-		workerQueue:       make(map[string][]*runtimev1.Envelope),
-		streamEvents:      make(map[string][]*runtimev1.Envelope),
-		streamLastAt:      make(map[string]time.Time),
-		streamDoneAt:      make(map[string]time.Time),
-		streamSubs:        make(map[string]map[chan *runtimev1.Envelope]struct{}),
-		runs:              make(map[string]string),
-		logger:            logger,
-		token:             token,
-		configStore:       store,
-		consoleUsername:   strings.TrimSpace(os.Getenv("CONSOLE_USERNAME")),
-		consolePassword:   os.Getenv("CONSOLE_PASSWORD"),
-		consoleSessionTTL: parseConsoleSessionTTL(),
-		consoleSessions:   make(map[string]time.Time),
+		addr:            addr,
+		router:          mux.NewRouter(),
+		workers:         make(map[string]*WorkerSession),
+		workerQueue:     make(map[string][]*runtimev1.Envelope),
+		streamEvents:    make(map[string][]*runtimev1.Envelope),
+		streamLastAt:    make(map[string]time.Time),
+		streamDoneAt:    make(map[string]time.Time),
+		streamSubs:      make(map[string]map[chan *runtimev1.Envelope]struct{}),
+		runs:            make(map[string]string),
+		logger:          logger,
+		token:           token,
+		configStore:     store,
+		consoleSessions: make(map[string]time.Time),
 	}
 	s.setupRoutes()
 	return s
@@ -114,15 +115,18 @@ func (s *GatewayServer) setupRoutes() {
 	s.router.HandleFunc("/v1/worker/connect", s.handleWorkerConnect).Methods("GET")
 	s.router.HandleFunc("/v1/worker/poll", s.handleWorkerPoll).Methods("POST")
 	s.router.HandleFunc("/v1/worker/events", s.handleWorkerEvents).Methods("POST")
-	s.router.HandleFunc("/v1/worker/enroll", s.handleWorkerEnroll).Methods("POST")
 	s.router.HandleFunc("/v1/worker/config", s.handleWorkerGetConfig).Methods("GET")
 	s.router.HandleFunc("/v1/worker/config/ack", s.handleWorkerConfigAck).Methods("POST")
-	s.router.HandleFunc("/v1/admin/enroll-tokens", s.handleAdminCreateEnrollToken).Methods("POST")
-	s.router.HandleFunc("/v1/admin/enroll-tokens", s.handleAdminListEnrollTokens).Methods("GET")
-	s.router.HandleFunc("/v1/admin/enroll-tokens/{token}/revoke", s.handleAdminRevokeEnrollToken).Methods("POST")
+	s.router.HandleFunc("/v1/worker/pairing", s.handleWorkerPairingStart).Methods("POST")
+	s.router.HandleFunc("/v1/worker/pairing/{id}", s.handleWorkerPairingStatus).Methods("GET")
+	s.router.HandleFunc("/v1/admin/pairing", s.handleAdminListPairingRequests).Methods("GET")
+	s.router.HandleFunc("/v1/admin/pairing/{id}/approve", s.handleAdminApprovePairingRequest).Methods("POST")
+	s.router.HandleFunc("/v1/admin/pairing/code/{code}/approve", s.handleAdminApprovePairingRequestByCode).Methods("POST")
+	s.router.HandleFunc("/v1/admin/pairing/{id}/reject", s.handleAdminRejectPairingRequest).Methods("POST")
 	s.router.HandleFunc("/v1/admin/workers", s.handleAdminListWorkers).Methods("GET")
 	s.router.HandleFunc("/v1/admin/workers/{id}/config", s.handleAdminGetWorkerConfig).Methods("GET")
 	s.router.HandleFunc("/v1/admin/workers/{id}/config", s.handleAdminPutWorkerConfig).Methods("PUT")
+	s.router.HandleFunc("/v1/admin/workers/{id}", s.handleAdminDeleteWorker).Methods("DELETE")
 	s.router.HandleFunc("/v1/admin/workers/{id}/rotate-token", s.handleAdminRotateWorkerToken).Methods("POST")
 	s.router.HandleFunc("/v1/workers", s.handleListWorkers).Methods("GET")
 	s.router.HandleFunc("/v1/runs", s.handleCreateRun).Methods("POST")
@@ -163,7 +167,7 @@ func (s *GatewayServer) checkToken(r *http.Request) bool {
 	return false
 }
 
-func (s *GatewayServer) Start() error {
+func (s *GatewayServer) Start() error { //nolint:revive
 	s.logger.Infof("Starting Gateway Server on %s", s.addr)
 	handler := http.Handler(s.router)
 	handler = s.recoverMiddleware(handler)
@@ -232,7 +236,7 @@ func (s *GatewayServer) accessLogMiddleware(next http.Handler) http.Handler {
 			"bytes":   sw.bytes,
 			"elapsed": elapsed.String(),
 			"remote":  host,
-		}).Info("http")
+		}).Debug("http")
 	})
 }
 
@@ -298,7 +302,7 @@ func (s *GatewayServer) appendStreamEvent(streamID string, env *runtimev1.Envelo
 	}
 }
 
-func (s *GatewayServer) DispatchRun(workerID string, streamID string, req *runtimev1.RunRequest) error {
+func (s *GatewayServer) DispatchRun(workerID string, streamID string, req *runtimev1.RunRequest) error { //nolint:revive
 	env := &runtimev1.Envelope{
 		ProtocolVersion: "1.0",
 		WorkerId:        workerID,
@@ -323,7 +327,7 @@ func (s *GatewayServer) DispatchRun(workerID string, streamID string, req *runti
 	return nil
 }
 
-func (s *GatewayServer) DispatchCancel(workerID string, streamID string, reason string) error {
+func (s *GatewayServer) DispatchCancel(workerID string, streamID string, reason string) error { //nolint:revive
 	env := &runtimev1.Envelope{
 		ProtocolVersion: "1.0",
 		WorkerId:        workerID,
@@ -396,7 +400,10 @@ func (s *GatewayServer) handleWorkerConnect(w http.ResponseWriter, r *http.Reque
 		s.logger.Errorf("Failed to upgrade worker connection: %v", err)
 		return
 	}
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck
+
+	conn.SetReadDeadline(time.Now().Add(pongWait))                                                         //nolint:errcheck
+	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(pongWait)); return nil }) //nolint:errcheck
 
 	env, err := s.readWorkerEnvelope(conn)
 	if err != nil {
@@ -437,12 +444,27 @@ func (s *GatewayServer) handleWorkerConnect(w http.ResponseWriter, r *http.Reque
 
 	s.flushWorkerQueue(workerID, worker)
 
+	go func() {
+		ticker := time.NewTicker(pingPeriod)
+		defer ticker.Stop()
+		for range ticker.C {
+			worker.writeMu.Lock()
+			conn.SetWriteDeadline(time.Now().Add(writeWait)) //nolint:errcheck
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				worker.writeMu.Unlock()
+				return
+			}
+			worker.writeMu.Unlock()
+		}
+	}()
+
 	for {
 		inEnv, err := s.readWorkerEnvelope(conn)
 		if err != nil {
 			s.logger.Infof("Worker disconnected: %s (%v)", workerID, err)
 			break
 		}
+		conn.SetReadDeadline(time.Now().Add(pongWait)) //nolint:errcheck
 
 		if hb := inEnv.GetWorkerHeartbeat(); hb != nil {
 			s.mu.Lock()
@@ -584,7 +606,7 @@ func (s *GatewayServer) handleWorkerPoll(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
 type workerEventsRequest struct {
@@ -628,7 +650,7 @@ func (s *GatewayServer) handleWorkerEvents(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(workerEventsAck{Accepted: true, Detail: fmt.Sprintf("accepted=%d", accepted)})
+	json.NewEncoder(w).Encode(workerEventsAck{Accepted: true, Detail: fmt.Sprintf("accepted=%d", accepted)}) //nolint:errcheck
 }
 
 type workerInfo struct {
@@ -668,7 +690,7 @@ func (s *GatewayServer) handleListWorkers(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(list)
+	json.NewEncoder(w).Encode(list) //nolint:errcheck
 }
 
 type createRunRequest struct {
@@ -781,7 +803,7 @@ func (s *GatewayServer) handleCreateRun(w http.ResponseWriter, r *http.Request) 
 	s.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(createRunResponse{
+	json.NewEncoder(w).Encode(createRunResponse{ //nolint:errcheck
 		RunID:     runID,
 		WorkerID:  workerID,
 		EventsURL: fmt.Sprintf("/v1/runs/%s/events", runID),
@@ -865,7 +887,7 @@ func (s *GatewayServer) handleCancelRun(w http.ResponseWriter, r *http.Request) 
 	}
 	_ = s.DispatchCancel(workerID, id, "cancel requested by client")
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"accepted": true})
+	json.NewEncoder(w).Encode(map[string]any{"accepted": true}) //nolint:errcheck
 }
 
 func (s *GatewayServer) handleRunEvents(w http.ResponseWriter, r *http.Request) {
@@ -912,8 +934,8 @@ func (s *GatewayServer) handleRunEvents(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			return
 		}
-		fmt.Fprintf(w, "event: run_event\n")
-		fmt.Fprintf(w, "data: %s\n\n", string(b))
+		fmt.Fprintf(w, "event: run_event\n")      //nolint:errcheck
+		fmt.Fprintf(w, "data: %s\n\n", string(b)) //nolint:errcheck
 		flusher.Flush()
 	}
 
@@ -933,7 +955,7 @@ func (s *GatewayServer) handleRunEvents(w http.ResponseWriter, r *http.Request) 
 				writeEvent(env)
 			}
 		case <-keepalive.C:
-			fmt.Fprintf(w, "event: ping\ndata: {}\n\n")
+			fmt.Fprintf(w, "event: ping\ndata: {}\n\n") //nolint:errcheck
 			flusher.Flush()
 		}
 	}
@@ -970,7 +992,7 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 
-	configByWorkerID := map[string]workerRecord{}
+	configByWorkerID := map[string]WorkerRecord{}
 	if s.configStore != nil {
 		if list, err := s.configStore.ListWorkers(); err == nil {
 			for _, rec := range list {
@@ -1065,46 +1087,94 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", "no-store")
 
-	fmt.Fprint(w, "<!DOCTYPE html><html><head><meta charset=\"utf-8\" /><title>Nano Cloud Console</title>")
-	fmt.Fprint(w, "<style>body{font-family:system-ui,sans-serif;padding:16px;background:#0b0f14;color:#e6edf3}h1{margin:0 0 8px 0}h2{margin:18px 0 8px 0;font-size:14px;letter-spacing:1px;color:#9fb0c0}table{border-collapse:collapse;width:100%}th,td{border:1px solid rgba(255,255,255,0.12);padding:8px;font-size:13px}th{background:rgba(255,255,255,0.06);text-align:left}code{font-family:ui-monospace,Menlo,monospace}small{color:#9fb0c0}.ok{color:#7ee787}.bad{color:#ff7b72}.panel{margin-top:16px;border:1px solid rgba(255,255,255,0.12);padding:12px;border-radius:8px;background:rgba(255,255,255,0.03)}label{display:block;margin-top:8px}.field{margin-top:4px;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:#0f141b;color:#e6edf3}.btn{margin-top:10px;padding:8px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.25);background:#1f6feb;color:white;cursor:pointer}.btn.secondary{background:#30363d}.err{color:#ff7b72;margin-top:8px}</style>")
-	fmt.Fprint(w, "</head><body>")
-	fmt.Fprint(w, "<h1>Nano Cloud Console</h1>")
-	fmt.Fprintf(w, "<small>server_time=%s | workers_online=%d | runs_tracked=%d</small>", now.Format(time.RFC3339), len(publicWorkers), len(runs))
+	fmt.Fprint(w, "<!DOCTYPE html><html><head><meta charset=\"utf-8\" /><title>Nano Cloud Console</title>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         //nolint:errcheck
+	fmt.Fprint(w, "<style>body{font-family:system-ui,sans-serif;padding:16px;background:#0b0f14;color:#e6edf3}h1{margin:0 0 8px 0}h2{margin:18px 0 8px 0;font-size:14px;letter-spacing:1px;color:#9fb0c0}table{border-collapse:collapse;width:100%}th,td{border:1px solid rgba(255,255,255,0.12);padding:8px;font-size:13px}th{background:rgba(255,255,255,0.06);text-align:left}code{font-family:ui-monospace,Menlo,monospace}small{color:#9fb0c0}.ok{color:#7ee787}.bad{color:#ff7b72}.panel{margin-top:16px;border:1px solid rgba(255,255,255,0.12);padding:12px;border-radius:8px;background:rgba(255,255,255,0.03)}label{display:block;margin-top:8px}.field{margin-top:4px;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:#0f141b;color:#e6edf3}.btn{margin-top:10px;padding:8px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.25);background:#1f6feb;color:white;cursor:pointer}.btn.secondary{background:#30363d}.err{color:#ff7b72;margin-top:8px}</style>") //nolint:errcheck
+	fmt.Fprint(w, "</head><body>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  //nolint:errcheck
+	fmt.Fprint(w, "<h1>Nano Cloud Console</h1>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    //nolint:errcheck
+	fmt.Fprintf(w, "<small>server_time=%s | workers_online=%d | runs_tracked=%d</small>", now.Format(time.RFC3339), len(publicWorkers), len(runs))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  //nolint:errcheck
 
 	if authEnabled && !loggedIn {
-		fmt.Fprint(w, "<div class=\"panel\"><h2>LOGIN REQUIRED FOR SENSITIVE DATA</h2>")
-		fmt.Fprint(w, "<small>匿名访问仅展示公开概览，敏感字段需要登录。</small>")
+		fmt.Fprint(w, "<div class=\"panel\"><h2>LOGIN REQUIRED FOR SENSITIVE DATA</h2>") //nolint:errcheck
+		fmt.Fprint(w, "<small>匿名访问仅展示公开概览，敏感字段需要登录。</small>")                            //nolint:errcheck
 		if loginFailed {
-			fmt.Fprint(w, "<div class=\"err\">用户名或密码错误</div>")
+			fmt.Fprint(w, "<div class=\"err\">Token 错误</div>") //nolint:errcheck
 		}
-		fmt.Fprint(w, "<form method=\"post\" action=\"/console/login\">")
-		fmt.Fprint(w, "<label>用户名</label><input class=\"field\" type=\"text\" name=\"username\" autocomplete=\"username\" />")
-		fmt.Fprint(w, "<label>密码</label><input class=\"field\" type=\"password\" name=\"password\" autocomplete=\"current-password\" />")
-		fmt.Fprint(w, "<button class=\"btn\" type=\"submit\">登录</button></form></div>")
+		fmt.Fprint(w, "<form method=\"post\" action=\"/console/login\">")                                                                         //nolint:errcheck
+		fmt.Fprint(w, "<label>Gateway Token</label><input class=\"field\" type=\"password\" name=\"token\" autocomplete=\"current-password\" />") //nolint:errcheck
+		fmt.Fprint(w, "<button class=\"btn\" type=\"submit\">登录</button></form></div>")                                                           //nolint:errcheck
 	}
 	if authEnabled && loggedIn {
-		fmt.Fprint(w, "<div class=\"panel\"><small>已登录，可查看敏感信息</small>")
-		fmt.Fprint(w, "<form method=\"post\" action=\"/console/logout\"><button class=\"btn secondary\" type=\"submit\">退出登录</button></form></div>")
+		fmt.Fprint(w, "<div class=\"panel\"><small>已登录，可查看敏感信息</small>")                                                                             //nolint:errcheck
+		fmt.Fprint(w, "<form method=\"post\" action=\"/console/logout\"><button class=\"btn secondary\" type=\"submit\">退出登录</button></form></div>") //nolint:errcheck
 	}
 	if !authEnabled {
-		fmt.Fprint(w, "<div class=\"panel\"><small>未配置 CONSOLE_USERNAME / CONSOLE_PASSWORD，敏感信息默认隐藏。</small></div>")
+		fmt.Fprint(w, "<div class=\"panel\"><small>未配置 -token，敏感信息默认隐藏。</small></div>") //nolint:errcheck
 	}
 
-	fmt.Fprint(w, "<h2>PUBLIC WORKERS</h2>")
-	fmt.Fprint(w, "<table><thead><tr><th>name</th><th>version</th><th>runtimes</th><th>last_seen</th></tr></thead><tbody>")
+	// Pairing Requests Section (Only visible when logged in)
+	if loggedIn {
+		type pairingRow struct {
+			ID        string
+			UserCode  string
+			Worker    string
+			Host      string
+			Labels    string
+			Status    string
+			CreatedAt string
+		}
+		var pending []pairingRow
+		if reqs, err := s.configStore.ListPairingRequests(); err == nil {
+			for _, r := range reqs {
+				if r.Status == "pending" {
+					pending = append(pending, pairingRow{
+						ID:        r.ID,
+						UserCode:  r.UserCode,
+						Worker:    r.WorkerName,
+						Host:      r.HostInfo,
+						Labels:    strings.Join(r.Labels, ","),
+						Status:    r.Status,
+						CreatedAt: time.Unix(r.CreatedAt, 0).Format(time.RFC3339),
+					})
+				}
+			}
+		}
+
+		if len(pending) > 0 {
+			fmt.Fprint(w, "<h2>PENDING PAIRING REQUESTS</h2>")                                                                                             //nolint:errcheck
+			fmt.Fprint(w, "<table><thead><tr><th>code</th><th>worker</th><th>host</th><th>labels</th><th>created</th><th>action</th></tr></thead><tbody>") //nolint:errcheck
+			for _, row := range pending {
+				actionForm := fmt.Sprintf(`<form method="post" action="/v1/admin/pairing/%s/approve" style="display:inline"><button class="btn" style="margin-top:0;padding:4px 8px;background:#238636">Approve</button></form> <form method="post" action="/v1/admin/pairing/%s/reject" style="display:inline"><button class="btn secondary" style="margin-top:0;padding:4px 8px;background:#da3633">Reject</button></form>`, row.ID, row.ID)
+				fmt.Fprintf(w, "<tr><td><strong>%s</strong></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>", htmlEscape(row.UserCode), htmlEscape(row.Worker), htmlEscape(row.Host), htmlEscape(row.Labels), row.CreatedAt, actionForm) //nolint:errcheck
+			}
+			fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
+		}
+
+		// Quick Approve by Code form
+		prefillCode := r.URL.Query().Get("pairing")
+		_, _ = fmt.Fprintf(w, `<div class="panel">
+			<h3>Approve by Code</h3>
+			<form method="post" action="/v1/admin/pairing/code/APPROVE_CODE/approve" onsubmit="this.action='/v1/admin/pairing/code/' + document.getElementById('short_code').value + '/approve'; return true;" style="display:flex; gap:10px; align-items:center;">
+				<input class="field" id="short_code" type="text" placeholder="Enter 6-character code" required pattern="[a-zA-Z0-9]{6}" style="margin:0; width:200px;" value="%s" />
+				<button class="btn" type="submit" style="margin:0; background:#238636">Approve</button>
+			</form>
+		</div>`, htmlEscape(prefillCode))
+	}
+
+	fmt.Fprint(w, "<h2>PUBLIC WORKERS</h2>")                                                                                //nolint:errcheck
+	fmt.Fprint(w, "<table><thead><tr><th>name</th><th>version</th><th>runtimes</th><th>last_seen</th></tr></thead><tbody>") //nolint:errcheck
 	for _, row := range publicWorkers {
 		last := time.Unix(row.LastSeenUnixSec, 0).Format(time.RFC3339)
-		fmt.Fprintf(w, "<tr><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>", htmlEscape(row.Name), htmlEscape(row.Version), htmlEscape(row.Supported), last)
+		fmt.Fprintf(w, "<tr><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>", htmlEscape(row.Name), htmlEscape(row.Version), htmlEscape(row.Supported), last) //nolint:errcheck
 	}
-	fmt.Fprint(w, "</tbody></table>")
+	fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
 
 	if !loggedIn {
-		fmt.Fprint(w, "</body></html>")
+		fmt.Fprint(w, "</body></html>") //nolint:errcheck
 		return
 	}
 
-	fmt.Fprint(w, "<h2>PRIVATE WORKERS</h2>")
-	fmt.Fprint(w, "<table><thead><tr><th>id</th><th>name</th><th>version</th><th>labels</th><th>runtimes</th><th>config</th><th>applied</th><th>status</th><th>last_seen</th></tr></thead><tbody>")
+	fmt.Fprint(w, "<h2>PRIVATE WORKERS</h2>")                                                                                                                                                       //nolint:errcheck
+	fmt.Fprint(w, "<table><thead><tr><th>id</th><th>name</th><th>version</th><th>labels</th><th>runtimes</th><th>config</th><th>applied</th><th>status</th><th>last_seen</th></tr></thead><tbody>") //nolint:errcheck
 	for _, row := range workers {
 		last := time.Unix(row.LastSeenUnixSec, 0).Format(time.RFC3339)
 		statusClass := "bad"
@@ -1113,22 +1183,22 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 			statusClass = "ok"
 			statusText = "applied"
 		}
-		fmt.Fprintf(w, "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td><td><code>%s</code></td><td><span class=\"%s\">%s</span></td><td><code>%s</code></td></tr>", htmlEscape(row.IDPrefix), htmlEscape(row.Name), htmlEscape(row.Version), htmlEscape(row.Labels), htmlEscape(row.Supported), htmlEscape(row.ConfigPrefix), htmlEscape(row.AppliedPrefix), statusClass, statusText, last)
+		fmt.Fprintf(w, "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td><td><code>%s</code></td><td><span class=\"%s\">%s</span></td><td><code>%s</code></td></tr>", htmlEscape(row.IDPrefix), htmlEscape(row.Name), htmlEscape(row.Version), htmlEscape(row.Labels), htmlEscape(row.Supported), htmlEscape(row.ConfigPrefix), htmlEscape(row.AppliedPrefix), statusClass, statusText, last) //nolint:errcheck
 	}
-	fmt.Fprint(w, "</tbody></table>")
+	fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
 
-	fmt.Fprint(w, "<h2>RECENT RUNS</h2>")
-	fmt.Fprint(w, "<table><thead><tr><th>run</th><th>worker</th><th>events</th><th>last_seq</th></tr></thead><tbody>")
+	fmt.Fprint(w, "<h2>RECENT RUNS</h2>")                                                                              //nolint:errcheck
+	fmt.Fprint(w, "<table><thead><tr><th>run</th><th>worker</th><th>events</th><th>last_seq</th></tr></thead><tbody>") //nolint:errcheck
 	for _, row := range runs {
-		fmt.Fprintf(w, "<tr><td><code>%s</code></td><td><code>%s</code></td><td>%d</td><td><code>%d</code></td></tr>", htmlEscape(row.RunIDPrefix), htmlEscape(row.WorkerIDPrefix), row.EventCount, row.LastSeq)
+		fmt.Fprintf(w, "<tr><td><code>%s</code></td><td><code>%s</code></td><td>%d</td><td><code>%d</code></td></tr>", htmlEscape(row.RunIDPrefix), htmlEscape(row.WorkerIDPrefix), row.EventCount, row.LastSeq) //nolint:errcheck
 	}
-	fmt.Fprint(w, "</tbody></table>")
+	fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
 
-	fmt.Fprint(w, "</body></html>")
+	fmt.Fprint(w, "</body></html>") //nolint:errcheck
 }
 
 func (s *GatewayServer) consoleAuthEnabled() bool {
-	return strings.TrimSpace(s.consoleUsername) != "" && s.consolePassword != ""
+	return s.token != ""
 }
 
 func (s *GatewayServer) consoleSessionValid(r *http.Request) bool {
@@ -1160,7 +1230,7 @@ func (s *GatewayServer) createConsoleSession() (string, time.Time, error) {
 		return "", time.Time{}, err
 	}
 	sid := hex.EncodeToString(raw)
-	exp := time.Now().Add(s.consoleSessionTTL)
+	exp := time.Now().Add(parseConsoleSessionTTL())
 	s.mu.Lock()
 	s.consoleSessions[sid] = exp
 	s.mu.Unlock()
@@ -1210,11 +1280,15 @@ func (s *GatewayServer) handleConsoleLogin(w http.ResponseWriter, r *http.Reques
 		http.Redirect(w, r, "/console?login=failed", http.StatusSeeOther)
 		return
 	}
-	username := strings.TrimSpace(r.FormValue("username"))
-	password := r.FormValue("password")
-	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(s.consoleUsername)) == 1
-	passOK := subtle.ConstantTimeCompare([]byte(password), []byte(s.consolePassword)) == 1
-	if !userOK || !passOK {
+	token := strings.TrimSpace(r.FormValue("token"))
+	// If the form field 'token' is missing, fallback to 'password' for backward compatibility
+	if token == "" {
+		token = strings.TrimSpace(r.FormValue("password"))
+	}
+
+	// Compare with gateway token
+	ok := subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) == 1
+	if !ok {
 		http.Redirect(w, r, "/console?login=failed", http.StatusSeeOther)
 		return
 	}

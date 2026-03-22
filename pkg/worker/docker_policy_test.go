@@ -52,3 +52,27 @@ func TestDockerExtraArgsFromPolicy_CPUFormatting(t *testing.T) {
 		}
 	}
 }
+
+func TestShouldBypassProxy(t *testing.T) {
+	tests := []struct {
+		name        string
+		requestHost string
+		targetHost  string
+		want        bool
+	}{
+		{name: "same host", requestHost: "gateway", targetHost: "gateway", want: true},
+		{name: "localhost", requestHost: "localhost", targetHost: "gateway", want: true},
+		{name: "loopback ip", requestHost: "127.0.0.1", targetHost: "gateway", want: true},
+		{name: "private ip", requestHost: "10.0.0.12", targetHost: "gateway", want: true},
+		{name: "public ip", requestHost: "8.8.8.8", targetHost: "gateway", want: false},
+		{name: "different host", requestHost: "example.com", targetHost: "gateway", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldBypassProxy(tt.requestHost, tt.targetHost)
+			if got != tt.want {
+				t.Fatalf("got=%v want=%v requestHost=%q targetHost=%q", got, tt.want, tt.requestHost, tt.targetHost)
+			}
+		})
+	}
+}

@@ -42,9 +42,10 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
           PEM_FILE: ~/.ssh/nano_deploy_key
-          DEPLOY_DIR: /home/${{ secrets.EC2_USER }}/nano-gateway
+          DEPLOY_DIR: /opt/nano-gateway
           LOCAL_PROJECT_DIR: ${{ github.workspace }}
           GATEWAY_TOKEN: ${{ secrets.NANO_GATEWAY_TOKEN || 'nano-gateway-token-2024' }}
+          GATEWAY_LOG_FILE: /opt/nano-gateway/logs/gateway.log
         run: |
           chmod +x deployment/deploy-gateway.sh
           bash deployment/deploy-gateway.sh deploy

@@ -1,12 +1,8 @@
 package server
 
 import (
-	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -14,40 +10,39 @@ import (
 
 func TestWorkerConfigHandlers_ETagNotModified(t *testing.T) {
 	dir := t.TempDir()
-	toks := enrollTokensFile{Tokens: []enrollTokenRecord{{Token: "enroll-1"}}}
-	b, _ := json.Marshal(toks)
-	if err := os.WriteFile(filepath.Join(dir, "enroll_tokens.json"), append(b, '\n'), 0o600); err != nil {
-		t.Fatalf("write enroll_tokens.json: %v", err)
-	}
-
 	srv := NewGatewayServerWithLogger(":0", "", dir, logrus.New())
 
-	enrollReqBody, _ := json.Marshal(map[string]any{
-		"enroll_token": "enroll-1",
-		"labels":       []string{"docker-desktop"},
-	})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/worker/enroll", bytes.NewReader(enrollReqBody))
-	req.Header.Set("Content-Type", "application/json")
-	srv.router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("enroll status=%d body=%s", rec.Code, rec.Body.String())
+	// 1. Manually create an approved worker via store to skip HTTP pairing dance
+	id, secret, _, err := srv.configStore.CreatePairingRequest("test-worker", "linux/amd64", []string{"docker-desktop"})
+	if err != nil {
+		t.Fatalf("CreatePairingRequest: %v", err)
 	}
-	var enrollResp struct {
-		WorkerToken   string `json:"worker_token"`
-		ConfigVersion string `json:"config_version"`
+	if err := srv.configStore.ApprovePairingRequest(id); err != nil {
+		t.Fatalf("ApprovePairingRequest: %v", err)
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &enrollResp); err != nil {
-		t.Fatalf("decode enroll resp: %v", err)
-	}
-	if enrollResp.WorkerToken == "" || enrollResp.ConfigVersion == "" {
-		t.Fatalf("missing worker_token/config_version")
+	_, workerToken, err := srv.configStore.PollPairingRequest(id, secret)
+	if err != nil {
+		t.Fatalf("PollPairingRequest: %v", err)
 	}
 
+	// 2. Get Config first time to get version
+	rec1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodGet, "/v1/worker/config", nil)
+	req1.Header.Set("Authorization", "Bearer "+workerToken)
+	srv.router.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("get config status=%d body=%s", rec1.Code, rec1.Body.String())
+	}
+	configVersion := rec1.Header().Get("ETag")
+	if configVersion == "" {
+		t.Fatalf("missing ETag header")
+	}
+
+	// 3. Get Config with If-None-Match
 	rec2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest(http.MethodGet, "/v1/worker/config", nil)
-	req2.Header.Set("Authorization", "Bearer "+enrollResp.WorkerToken)
-	req2.Header.Set("If-None-Match", `"`+enrollResp.ConfigVersion+`"`)
+	req2.Header.Set("Authorization", "Bearer "+workerToken)
+	req2.Header.Set("If-None-Match", configVersion)
 	srv.router.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusNotModified {
 		t.Fatalf("expected 304, got=%d body=%s", rec2.Code, rec2.Body.String())

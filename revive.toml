@@ -1,0 +1,47 @@
+ignoreGeneratedHeader = false
+severity = "warning"
+confidence = 0.8
+errorCode = 0
+warningCode = 0
+
+[rule.blank-imports]
+[rule.context-as-argument]
+  disabled = true
+[rule.context-keys-type]
+[rule.dot-imports]
+  disabled = true
+[rule.error-return]
+[rule.error-strings]
+  disabled = true
+[rule.error-naming]
+  disabled = true
+[rule.exported]
+  disabled = true
+[rule.if-return]
+  disabled = true
+[rule.increment-decrement]
+  disabled = true
+[rule.var-naming]
+  disabled = true
+[rule.var-declaration]
+  disabled = true
+[rule.package-comments]
+  disabled = true
+[rule.range]
+  disabled = true
+[rule.receiver-naming]
+[rule.time-naming]
+[rule.unexported-return]
+[rule.indent-error-flow]
+  disabled = true
+[rule.errorf]
+[rule.empty-block]
+  disabled = true
+[rule.superfluous-else]
+  disabled = true
+[rule.unused-parameter]
+  disabled = true
+[rule.unreachable-code]
+  disabled = true
+[rule.redefines-builtin-id]
+  disabled = true

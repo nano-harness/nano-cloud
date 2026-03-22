@@ -1,0 +1,53 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/gateway/Dockerfile
+      args:
+        BASE_GOLANG_IMAGE: ${BASE_GOLANG_IMAGE:-docker.io/library/golang:1.24.4}
+        BASE_LINUX_IMAGE: ${BASE_LINUX_IMAGE:-docker.io/library/golang:1.24.4}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./data:/data
+    command: ["-addr", ":8081", "-token", "dev-token", "-config-store-dir", "/data"]
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+      args:
+        BASE_GOLANG_IMAGE: ${BASE_GOLANG_IMAGE:-docker.io/library/golang:1.24.4}
+        BASE_LINUX_IMAGE: ${BASE_LINUX_IMAGE:-docker.io/library/golang:1.24.4}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+        DOCKER_CLI_VERSION: ${DOCKER_CLI_VERSION:-28.5.1}
+        DOCKER_CLI_IMAGE: ${DOCKER_CLI_IMAGE:-docker.m.daocloud.io/library/docker:${DOCKER_CLI_VERSION:-28.5.1}-cli}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./workspace:/workspace
+      - ./state:/state
+    environment:
+      - NANO_API_KEY=${NANO_API_KEY}
+      - NANO_BASE_URL=${NANO_BASE_URL}
+      - NANO_MODEL=${NANO_MODEL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-}
+    command:
+      - "-relay"
+      - "${RELAY_URL:-ws://gateway:8081}"
+      - "-workspace-root"
+      - "/workspace"
+      - "-host-workspace-root"
+      - "${PWD}/workspace"
+      - "-host-state-root"
+      - "${PWD}/state"
+      - "-state-dir"
+      - "/state"
+    depends_on:
+      - gateway
+    restart: unless-stopped

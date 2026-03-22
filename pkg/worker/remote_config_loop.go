@@ -12,7 +12,6 @@ import (
 )
 
 func (w *Worker) remoteConfigLoop(ctx context.Context) {
-	client := &http.Client{Timeout: 15 * time.Second}
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 
@@ -31,6 +30,7 @@ func (w *Worker) remoteConfigLoop(ctx context.Context) {
 			if err != nil {
 				continue
 			}
+			client := newBootstrapHTTPClient(baseURL)
 
 			statePath := filepath.Join(cfg.StateDir, "state.json")
 			workerCfgPath := filepath.Join(cfg.StateDir, "worker-config.yaml")
@@ -72,11 +72,13 @@ func (w *Worker) remoteConfigLoop(ctx context.Context) {
 			_ = writeBootstrapState(statePath, st)
 
 			merged, err := parseAndMergeWorkerConfig(cfgResp.WorkerConfigYAML, st, BootstrapConfig{
-				RelayURL:      cfg.RelayURL,
-				WorkspaceRoot: cfg.WorkspaceRoot,
-				StateDir:      cfg.StateDir,
-				Labels:        cfg.Labels,
-				WorkerID:      cfg.WorkerID,
+				RelayURL:          cfg.RelayURL,
+				WorkspaceRoot:     cfg.WorkspaceRoot,
+				HostWorkspaceRoot: cfg.HostWorkspaceRoot,
+				HostStateRoot:     cfg.HostStateRoot,
+				StateDir:          cfg.StateDir,
+				Labels:            cfg.Labels,
+				WorkerID:          cfg.WorkerID,
 			}, agentCfgPath)
 			if err != nil {
 				continue
@@ -107,7 +109,7 @@ func (w *Worker) fetchRemoteConfig(ctx context.Context, client *http.Client, bas
 	if err != nil {
 		return nil, false, 0, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode == http.StatusNotModified {
 		return nil, true, resp.StatusCode, nil
@@ -136,7 +138,7 @@ func (w *Worker) ackAppliedConfig(ctx context.Context, client *http.Client, base
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("ack config failed: status=%d", resp.StatusCode)
 	}

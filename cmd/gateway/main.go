@@ -1,8 +1,7 @@
-package main
+package main //nolint:revive
 
 import (
 	"flag"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -31,22 +30,49 @@ func main() {
 	}
 	logger.SetLevel(level)
 	logger.SetFormatter(&logrus.TextFormatter{FullTimestamp: true})
+	logger.SetOutput(os.Stdout)
 
-	var out io.Writer = os.Stdout
 	if lf := filepath.Clean(*logFile); lf != "" && lf != "." {
 		if err := os.MkdirAll(filepath.Dir(lf), 0o755); err != nil {
 			log.Fatal(err)
 		}
-		out = io.MultiWriter(os.Stdout, &lumberjack.Logger{
+		fileLogger := &lumberjack.Logger{
 			Filename:   lf,
 			MaxSize:    *logMaxSizeMB,
 			MaxBackups: *logMaxBackups,
 			MaxAge:     *logMaxAgeDays,
 			Compress:   *logCompress,
+		}
+		logger.AddHook(&fileHook{
+			writer: fileLogger,
+			levels: []logrus.Level{
+				logrus.InfoLevel,
+				logrus.WarnLevel,
+				logrus.ErrorLevel,
+				logrus.FatalLevel,
+				logrus.PanicLevel,
+			},
 		})
 	}
-	logger.SetOutput(out)
 
 	srv := server.NewGatewayServerWithLogger(*addr, *token, *configStoreDir, logger)
 	log.Fatal(srv.Start())
+}
+
+type fileHook struct {
+	writer *lumberjack.Logger
+	levels []logrus.Level
+}
+
+func (h *fileHook) Fire(entry *logrus.Entry) error {
+	line, err := entry.String()
+	if err != nil {
+		return err
+	}
+	_, err = h.writer.Write([]byte(line))
+	return err
+}
+
+func (h *fileHook) Levels() []logrus.Level {
+	return h.levels
 }

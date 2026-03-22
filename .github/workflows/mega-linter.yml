@@ -1,0 +1,38 @@
+name: MegaLinter
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: MegaLinter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout nano-agent
+        uses: actions/checkout@v4
+        with:
+          repository: nano-harness/nano-agent
+          path: .deps/nano-agent
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Rewrite go.mod replace path for CI
+        run: sed -i 's|=> ../nano-agent|=> ./.deps/nano-agent|' go.mod
+
+      - name: MegaLinter
+        id: ml
+        uses: oxsecurity/megalinter/flavors/go@v8
+        env:
+          VALIDATE_ALL_CODEBASE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOTOOLCHAIN: auto

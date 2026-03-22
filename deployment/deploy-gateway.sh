@@ -7,7 +7,7 @@ set -euo pipefail
 EC2_USER="${EC2_USER:-ubuntu}"
 EC2_HOST="${EC2_HOST:-ec2-43-200-3-149.ap-northeast-2.compute.amazonaws.com}"
 PEM_FILE="${PEM_FILE:-~/Downloads/web-crawler.pem}"
-DEPLOY_DIR="${DEPLOY_DIR:-/home/ubuntu/nano-gateway}"
+DEPLOY_DIR="${DEPLOY_DIR:-/opt/nano-gateway}"
 LOCAL_PROJECT_DIR="${LOCAL_PROJECT_DIR:-${GITHUB_WORKSPACE:-$(pwd)}}"
 if [ -d "$LOCAL_PROJECT_DIR/cmd/gateway" ]; then
     PROJECT_ROOT="$LOCAL_PROJECT_DIR"
@@ -47,7 +47,7 @@ fi
 build() {
     log "${YELLOW}Building Gateway binary...${NC}"
     cd "$PROJECT_ROOT"
-    
+
     mkdir -p bin
     CGO_ENABLED=0 GOOS=$TARGET_OS GOARCH=$TARGET_ARCH go build \
         -ldflags "-s -w" \
@@ -63,30 +63,30 @@ build() {
 # 2. Transfer
 transfer() {
     log "${YELLOW}Transferring files to $EC2_HOST...${NC}"
-    
+
     # Create dir
     ssh -o StrictHostKeyChecking=no -i "$PEM_FILE" "$EC2_USER@$EC2_HOST" "mkdir -p $DEPLOY_DIR"
-    
+
     # Stop service if running
     ssh -o StrictHostKeyChecking=no -i "$PEM_FILE" "$EC2_USER@$EC2_HOST" "sudo systemctl stop nano-gateway.service || true"
 
     # SCP binary
     scp -o StrictHostKeyChecking=no -i "$PEM_FILE" "$PROJECT_ROOT/bin/$BINARY_NAME" "$EC2_USER@$EC2_HOST:$DEPLOY_DIR/$BINARY_NAME"
-    
+
     log "${GREEN}Transfer successful${NC}"
 }
 
 # 3. Install & Start
 install() {
     log "${YELLOW}Installing and Starting Service...${NC}"
-    
+
     ssh -o StrictHostKeyChecking=no -i "$PEM_FILE" "$EC2_USER@$EC2_HOST" <<EOF
         sudo chmod +x $DEPLOY_DIR/$BINARY_NAME
 
         sudo mkdir -p "$(dirname "$GATEWAY_LOG_FILE")"
         sudo chown -R $EC2_USER:$EC2_USER "$(dirname "$GATEWAY_LOG_FILE")"
         sudo mkdir -p "$DEPLOY_DIR/data"
-        
+
         # Create Systemd Service
         sudo tee /etc/systemd/system/nano-gateway.service >/dev/null <<SERVICE
 [Unit]
