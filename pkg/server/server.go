@@ -42,21 +42,22 @@ var upgrader = websocket.Upgrader{
 
 // GatewayServer manages connections and routing
 type GatewayServer struct {
-	addr            string
-	router          *mux.Router
-	workers         map[string]*WorkerSession
-	workerQueue     map[string][]*runtimev1.Envelope
-	streamEvents    map[string][]*runtimev1.Envelope
-	streamLastAt    map[string]time.Time
-	streamDoneAt    map[string]time.Time
-	streamSubs      map[string]map[chan *runtimev1.Envelope]struct{}
-	runs            map[string]string
-	seqCounter      uint64
-	mu              sync.RWMutex
-	logger          *logrus.Logger
-	token           string
-	configStore     *WorkerConfigStore
-	consoleSessions map[string]time.Time
+	addr             string
+	router           *mux.Router
+	workers          map[string]*WorkerSession
+	workerQueue      map[string][]*runtimev1.Envelope
+	streamEvents     map[string][]*runtimev1.Envelope
+	streamEventTimes map[string][]time.Time
+	streamLastAt     map[string]time.Time
+	streamDoneAt     map[string]time.Time
+	streamSubs       map[string]map[chan *runtimev1.Envelope]struct{}
+	runs             map[string]string
+	seqCounter       uint64
+	mu               sync.RWMutex
+	logger           *logrus.Logger
+	token            string
+	configStore      *WorkerConfigStore
+	consoleSessions  map[string]time.Time
 }
 
 const (
@@ -93,19 +94,20 @@ func NewGatewayServerWithLogger(addr, token, configStoreDir string, logger *logr
 		logger.WithError(err).Fatal("failed to initialize worker config store")
 	}
 	s := &GatewayServer{
-		addr:            addr,
-		router:          mux.NewRouter(),
-		workers:         make(map[string]*WorkerSession),
-		workerQueue:     make(map[string][]*runtimev1.Envelope),
-		streamEvents:    make(map[string][]*runtimev1.Envelope),
-		streamLastAt:    make(map[string]time.Time),
-		streamDoneAt:    make(map[string]time.Time),
-		streamSubs:      make(map[string]map[chan *runtimev1.Envelope]struct{}),
-		runs:            make(map[string]string),
-		logger:          logger,
-		token:           token,
-		configStore:     store,
-		consoleSessions: make(map[string]time.Time),
+		addr:             addr,
+		router:           mux.NewRouter(),
+		workers:          make(map[string]*WorkerSession),
+		workerQueue:      make(map[string][]*runtimev1.Envelope),
+		streamEvents:     make(map[string][]*runtimev1.Envelope),
+		streamEventTimes: make(map[string][]time.Time),
+		streamLastAt:     make(map[string]time.Time),
+		streamDoneAt:     make(map[string]time.Time),
+		streamSubs:       make(map[string]map[chan *runtimev1.Envelope]struct{}),
+		runs:             make(map[string]string),
+		logger:           logger,
+		token:            token,
+		configStore:      store,
+		consoleSessions:  make(map[string]time.Time),
 	}
 	s.setupRoutes()
 	return s
@@ -133,6 +135,7 @@ func (s *GatewayServer) setupRoutes() {
 	s.router.HandleFunc("/v1/runs/{id}/events", s.handleRunEvents).Methods("GET")
 	s.router.HandleFunc("/v1/runs/{id}/cancel", s.handleCancelRun).Methods("POST")
 	s.router.HandleFunc("/console", s.handleConsole).Methods("GET")
+	s.router.HandleFunc("/console/runs/{id}", s.handleConsoleRunDetail).Methods("GET")
 	s.router.HandleFunc("/console/login", s.handleConsoleLogin).Methods("POST")
 	s.router.HandleFunc("/console/logout", s.handleConsoleLogout).Methods("POST")
 }
@@ -284,9 +287,13 @@ func (s *GatewayServer) appendStreamEvent(streamID string, env *runtimev1.Envelo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.streamEvents[streamID] = append(s.streamEvents[streamID], env)
+	s.streamEventTimes[streamID] = append(s.streamEventTimes[streamID], time.Now())
 	s.streamLastAt[streamID] = time.Now()
 	if len(s.streamEvents[streamID]) > maxStreamEventsPerStream {
 		s.streamEvents[streamID] = s.streamEvents[streamID][len(s.streamEvents[streamID])-maxStreamEventsPerStream:]
+		if len(s.streamEventTimes[streamID]) > maxStreamEventsPerStream {
+			s.streamEventTimes[streamID] = s.streamEventTimes[streamID][len(s.streamEventTimes[streamID])-maxStreamEventsPerStream:]
+		}
 	}
 	if evt := env.GetRunEvent(); evt != nil && evt.Kind == runtimev1.EventKind_EVENT_KIND_COMPLETED {
 		s.streamDoneAt[streamID] = time.Now()
@@ -517,6 +524,7 @@ func (s *GatewayServer) cleanupLoop() {
 				continue
 			}
 			delete(s.streamEvents, streamID)
+			delete(s.streamEventTimes, streamID)
 			delete(s.streamDoneAt, streamID)
 			delete(s.streamLastAt, streamID)
 			delete(s.streamSubs, streamID)
@@ -533,6 +541,7 @@ func (s *GatewayServer) cleanupLoop() {
 				continue
 			}
 			delete(s.streamEvents, streamID)
+			delete(s.streamEventTimes, streamID)
 			delete(s.streamLastAt, streamID)
 			delete(s.streamSubs, streamID)
 			delete(s.runs, streamID)
@@ -1087,11 +1096,11 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", "no-store")
 
-	fmt.Fprint(w, "<!DOCTYPE html><html><head><meta charset=\"utf-8\" /><title>Nano Cloud Console</title>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         //nolint:errcheck
-	fmt.Fprint(w, "<style>body{font-family:system-ui,sans-serif;padding:16px;background:#0b0f14;color:#e6edf3}h1{margin:0 0 8px 0}h2{margin:18px 0 8px 0;font-size:14px;letter-spacing:1px;color:#9fb0c0}table{border-collapse:collapse;width:100%}th,td{border:1px solid rgba(255,255,255,0.12);padding:8px;font-size:13px}th{background:rgba(255,255,255,0.06);text-align:left}code{font-family:ui-monospace,Menlo,monospace}small{color:#9fb0c0}.ok{color:#7ee787}.bad{color:#ff7b72}.panel{margin-top:16px;border:1px solid rgba(255,255,255,0.12);padding:12px;border-radius:8px;background:rgba(255,255,255,0.03)}label{display:block;margin-top:8px}.field{margin-top:4px;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:#0f141b;color:#e6edf3}.btn{margin-top:10px;padding:8px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.25);background:#1f6feb;color:white;cursor:pointer}.btn.secondary{background:#30363d}.err{color:#ff7b72;margin-top:8px}</style>") //nolint:errcheck
-	fmt.Fprint(w, "</head><body>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  //nolint:errcheck
-	fmt.Fprint(w, "<h1>Nano Cloud Console</h1>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    //nolint:errcheck
-	fmt.Fprintf(w, "<small>server_time=%s | workers_online=%d | runs_tracked=%d</small>", now.Format(time.RFC3339), len(publicWorkers), len(runs))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  //nolint:errcheck
+	fmt.Fprint(w, "<!DOCTYPE html><html><head><meta charset=\"utf-8\" /><title>Nano Cloud Console</title>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             //nolint:errcheck
+	fmt.Fprint(w, "<style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:24px;background:#0d1117;color:#e6edf3;max-width:1200px;margin:0 auto;line-height:1.5}h1{margin:0 0 12px 0;font-size:24px;font-weight:600}h2{margin:24px 0 12px 0;font-size:14px;letter-spacing:1px;color:#8b949e;text-transform:uppercase}table{border-collapse:collapse;width:100%;background:#161b22;border-radius:6px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)}th,td{border-bottom:1px solid #30363d;padding:12px 16px;font-size:13px}th{background:#21262d;text-align:left;font-weight:600;color:#8b949e}tr{transition:background 0.2s ease}tr:hover{background:#1f242c}tr:last-child td{border-bottom:none}code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;background:rgba(110,118,129,0.4);padding:2px 6px;border-radius:4px;font-size:12px}small{color:#8b949e}.ok{color:#3fb950;display:inline-flex;align-items:center;gap:4px}.ok::before{content:'';display:inline-block;width:8px;height:8px;background:#3fb950;border-radius:50%}.bad{color:#f85149;display:inline-flex;align-items:center;gap:4px}.bad::before{content:'';display:inline-block;width:8px;height:8px;background:#f85149;border-radius:50%}.panel{margin-top:16px;border:1px solid #30363d;padding:20px;border-radius:8px;background:#161b22;box-shadow:0 1px 3px rgba(0,0,0,0.1)}label{display:block;margin-top:12px;font-size:14px;font-weight:500}.field{margin-top:6px;padding:8px 12px;border-radius:6px;border:1px solid #30363d;background:#0d1117;color:#e6edf3;width:100%;box-sizing:border-box;transition:all 0.2s ease}.field:focus{outline:none;border-color:#58a6ff;box-shadow:0 0 0 3px rgba(88,166,255,0.3)}.btn{margin-top:12px;padding:8px 16px;border-radius:6px;border:1px solid rgba(240,246,252,0.1);background:#238636;color:white;cursor:pointer;font-weight:500;transition:all 0.2s ease;display:inline-flex;align-items:center;justify-content:center}.btn:hover{background:#2ea043;border-color:rgba(240,246,252,0.1)}.btn:active{background:#238636;transform:scale(0.98)}.btn:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(46,160,67,0.4)}.btn.secondary{background:#21262d;border-color:rgba(240,246,252,0.1);color:#c9d1d9}.btn.secondary:hover{background:#30363d;border-color:#8b949e}.btn.danger{background:#da3633;color:white;border-color:rgba(240,246,252,0.1)}.btn.danger:hover{background:#f85149}.err{color:#f85149;margin-top:8px;padding:8px 12px;background:rgba(248,81,73,0.1);border-left:4px solid #f85149;border-radius:4px}.empty-state{padding:32px;text-align:center;color:#8b949e;background:#161b22;border:1px dashed #30363d;border-radius:6px;font-size:14px}.action-form{display:inline-flex;gap:8px;align-items:center}a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}</style>") //nolint:errcheck
+	fmt.Fprint(w, "</head><body>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      //nolint:errcheck
+	fmt.Fprint(w, "<h1>Nano Cloud Console</h1>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        //nolint:errcheck
+	fmt.Fprintf(w, "<small>server_time=%s | workers_online=%d | runs_tracked=%d</small>", now.Format(time.RFC3339), len(publicWorkers), len(runs))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      //nolint:errcheck
 
 	if authEnabled && !loggedIn {
 		fmt.Fprint(w, "<div class=\"panel\"><h2>LOGIN REQUIRED FOR SENSITIVE DATA</h2>") //nolint:errcheck
@@ -1143,57 +1152,101 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, "<h2>PENDING PAIRING REQUESTS</h2>")                                                                                             //nolint:errcheck
 			fmt.Fprint(w, "<table><thead><tr><th>code</th><th>worker</th><th>host</th><th>labels</th><th>created</th><th>action</th></tr></thead><tbody>") //nolint:errcheck
 			for _, row := range pending {
-				actionForm := fmt.Sprintf(`<form method="post" action="/v1/admin/pairing/%s/approve" style="display:inline"><button class="btn" style="margin-top:0;padding:4px 8px;background:#238636">Approve</button></form> <form method="post" action="/v1/admin/pairing/%s/reject" style="display:inline"><button class="btn secondary" style="margin-top:0;padding:4px 8px;background:#da3633">Reject</button></form>`, row.ID, row.ID)
+				actionForm := fmt.Sprintf(`<div class="action-form"><form method="post" action="/v1/admin/pairing/%s/approve"><button class="btn" style="margin-top:0;padding:6px 12px;">Approve</button></form><form method="post" action="/v1/admin/pairing/%s/reject"><button class="btn danger" style="margin-top:0;padding:6px 12px;">Reject</button></form></div>`, row.ID, row.ID)
 				fmt.Fprintf(w, "<tr><td><strong>%s</strong></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>", htmlEscape(row.UserCode), htmlEscape(row.Worker), htmlEscape(row.Host), htmlEscape(row.Labels), row.CreatedAt, actionForm) //nolint:errcheck
 			}
 			fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
+		} else {
+			fmt.Fprint(w, "<h2>PENDING PAIRING REQUESTS</h2>")                             //nolint:errcheck
+			fmt.Fprint(w, "<div class=\"empty-state\">No pending pairing requests.</div>") //nolint:errcheck
 		}
 
 		// Quick Approve by Code form
 		prefillCode := r.URL.Query().Get("pairing")
 		_, _ = fmt.Fprintf(w, `<div class="panel">
-			<h3>Approve by Code</h3>
-			<form method="post" action="/v1/admin/pairing/code/APPROVE_CODE/approve" onsubmit="this.action='/v1/admin/pairing/code/' + document.getElementById('short_code').value + '/approve'; return true;" style="display:flex; gap:10px; align-items:center;">
-				<input class="field" id="short_code" type="text" placeholder="Enter 6-character code" required pattern="[a-zA-Z0-9]{6}" style="margin:0; width:200px;" value="%s" />
-				<button class="btn" type="submit" style="margin:0; background:#238636">Approve</button>
+			<h3 style="margin-top:0">Approve by Code</h3>
+			<form method="post" action="/v1/admin/pairing/code/APPROVE_CODE/approve" onsubmit="this.action='/v1/admin/pairing/code/' + document.getElementById('short_code').value + '/approve'; return true;" style="display:flex; gap:12px; align-items:center; margin-top:12px;">
+				<input class="field" id="short_code" type="text" placeholder="Enter 6-character code" required pattern="[a-zA-Z0-9]{6}" style="margin:0; width:240px;" value="%s" />
+				<button class="btn" type="submit" style="margin:0;">Approve Worker</button>
 			</form>
 		</div>`, htmlEscape(prefillCode))
 	}
 
-	fmt.Fprint(w, "<h2>PUBLIC WORKERS</h2>")                                                                                //nolint:errcheck
-	fmt.Fprint(w, "<table><thead><tr><th>name</th><th>version</th><th>runtimes</th><th>last_seen</th></tr></thead><tbody>") //nolint:errcheck
-	for _, row := range publicWorkers {
-		last := time.Unix(row.LastSeenUnixSec, 0).Format(time.RFC3339)
-		fmt.Fprintf(w, "<tr><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>", htmlEscape(row.Name), htmlEscape(row.Version), htmlEscape(row.Supported), last) //nolint:errcheck
+	fmt.Fprint(w, "<h2>PUBLIC WORKERS</h2>") //nolint:errcheck
+	if len(publicWorkers) == 0 {
+		fmt.Fprint(w, "<div class=\"empty-state\">No public workers connected.</div>") //nolint:errcheck
+	} else {
+		fmt.Fprint(w, "<table><thead><tr><th>name</th><th>version</th><th>runtimes</th><th>last_seen</th></tr></thead><tbody>") //nolint:errcheck
+		for _, row := range publicWorkers {
+			last := time.Unix(row.LastSeenUnixSec, 0).Format(time.RFC3339)
+			fmt.Fprintf(w, "<tr><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>", htmlEscape(row.Name), htmlEscape(row.Version), htmlEscape(row.Supported), last) //nolint:errcheck
+		}
+		fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
 	}
-	fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
 
 	if !loggedIn {
 		fmt.Fprint(w, "</body></html>") //nolint:errcheck
 		return
 	}
 
-	fmt.Fprint(w, "<h2>PRIVATE WORKERS</h2>")                                                                                                                                                       //nolint:errcheck
-	fmt.Fprint(w, "<table><thead><tr><th>id</th><th>name</th><th>version</th><th>labels</th><th>runtimes</th><th>config</th><th>applied</th><th>status</th><th>last_seen</th></tr></thead><tbody>") //nolint:errcheck
-	for _, row := range workers {
-		last := time.Unix(row.LastSeenUnixSec, 0).Format(time.RFC3339)
-		statusClass := "bad"
-		statusText := "pending"
-		if row.ConfigApplied {
-			statusClass = "ok"
-			statusText = "applied"
+	fmt.Fprint(w, "<h2>PRIVATE WORKERS</h2>") //nolint:errcheck
+	if len(workers) == 0 {
+		fmt.Fprint(w, "<div class=\"empty-state\">No private workers registered.</div>") //nolint:errcheck
+	} else {
+		fmt.Fprint(w, "<table><thead><tr><th>id</th><th>name</th><th>version</th><th>labels</th><th>runtimes</th><th>config</th><th>applied</th><th>status</th><th>last_seen</th></tr></thead><tbody>") //nolint:errcheck
+		for _, row := range workers {
+			last := time.Unix(row.LastSeenUnixSec, 0).Format(time.RFC3339)
+			statusClass := "bad"
+			statusText := "pending"
+			if row.ConfigApplied {
+				statusClass = "ok"
+				statusText = "applied"
+			}
+			fmt.Fprintf(w, "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td><td><code>%s</code></td><td><span class=\"%s\">%s</span></td><td><code>%s</code></td></tr>", htmlEscape(row.IDPrefix), htmlEscape(row.Name), htmlEscape(row.Version), htmlEscape(row.Labels), htmlEscape(row.Supported), htmlEscape(row.ConfigPrefix), htmlEscape(row.AppliedPrefix), statusClass, statusText, last) //nolint:errcheck
 		}
-		fmt.Fprintf(w, "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td><td><code>%s</code></td><td><span class=\"%s\">%s</span></td><td><code>%s</code></td></tr>", htmlEscape(row.IDPrefix), htmlEscape(row.Name), htmlEscape(row.Version), htmlEscape(row.Labels), htmlEscape(row.Supported), htmlEscape(row.ConfigPrefix), htmlEscape(row.AppliedPrefix), statusClass, statusText, last) //nolint:errcheck
+		fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
 	}
-	fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
 
-	fmt.Fprint(w, "<h2>RECENT RUNS</h2>")                                                                              //nolint:errcheck
-	fmt.Fprint(w, "<table><thead><tr><th>run</th><th>worker</th><th>events</th><th>last_seq</th></tr></thead><tbody>") //nolint:errcheck
-	for _, row := range runs {
-		fmt.Fprintf(w, "<tr><td><code>%s</code></td><td><code>%s</code></td><td>%d</td><td><code>%d</code></td></tr>", htmlEscape(row.RunIDPrefix), htmlEscape(row.WorkerIDPrefix), row.EventCount, row.LastSeq) //nolint:errcheck
+	baseURL := "http://" + r.Host
+	if r.TLS != nil {
+		baseURL = "https://" + r.Host
 	}
-	fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
+	fmt.Fprint(w, "<h2>RECENT RUNS</h2>") //nolint:errcheck
+	if len(runs) == 0 {
+		fmt.Fprint(w, "<div class=\"empty-state\">No runs have been executed yet.</div>") //nolint:errcheck
+	} else {
+		fmt.Fprint(w, "<table><thead><tr><th>run</th><th>worker</th><th>events</th><th>last_seq</th><th>action</th></tr></thead><tbody>") //nolint:errcheck
+		for _, row := range runs {
+			eventsURL := fmt.Sprintf("%s/v1/runs/%s/events", baseURL, row.RunIDPrefix)
+			cmdCurl := fmt.Sprintf(`curl -NsS "%s" -H "Authorization: Bearer <token>"`, eventsURL)
+			cmdLogs := fmt.Sprintf("worker logs %s --follow", row.RunIDPrefix)
+			detailURL := fmt.Sprintf("/console/runs/%s", row.RunIDPrefix)
+			actionHTML := fmt.Sprintf(`<a href="%s" target="_blank">events</a> · <a href="%s">detail</a><br/><code style="display:block;margin-top:4px">%s</code><code style="display:block;margin-top:4px">%s</code>`, eventsURL, detailURL, htmlEscape(cmdCurl), htmlEscape(cmdLogs))
+			fmt.Fprintf(w, "<tr><td><code>%s</code></td><td><code>%s</code></td><td>%d</td><td><code>%d</code></td><td>%s</td></tr>", htmlEscape(row.RunIDPrefix), htmlEscape(row.WorkerIDPrefix), row.EventCount, row.LastSeq, actionHTML) //nolint:errcheck
+		}
+		fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
+	}
 
+	_, _ = fmt.Fprint(w, `<script>
+document.querySelectorAll('form').forEach(form => {
+	form.addEventListener('submit', (e) => {
+		const btn = form.querySelector('button[type="submit"]');
+		if (btn) {
+			btn.style.opacity = '0.7';
+			btn.style.pointerEvents = 'none';
+			if (!btn.innerHTML.includes('⏳')) {
+				btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite;margin-right:6px">⏳</span>' + btn.innerHTML;
+			}
+		}
+	});
+});
+if (!document.querySelector('#spin-style')) {
+	const style = document.createElement('style');
+	style.id = 'spin-style';
+	style.innerHTML = '@keyframes spin { 100% { transform: rotate(360deg); } }';
+	document.head.appendChild(style);
+}
+</script>`)
 	fmt.Fprint(w, "</body></html>") //nolint:errcheck
 }
 
@@ -1307,4 +1360,111 @@ func (s *GatewayServer) handleConsoleLogout(w http.ResponseWriter, r *http.Reque
 	}
 	s.clearConsoleSessionCookie(w)
 	http.Redirect(w, r, "/console", http.StatusSeeOther)
+}
+
+func (s *GatewayServer) handleConsoleRunDetail(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	authEnabled := s.consoleAuthEnabled()
+	loggedIn := s.consoleSessionValid(r)
+	if authEnabled && !loggedIn {
+		http.Redirect(w, r, "/console?login=failed", http.StatusSeeOther)
+		return
+	}
+	s.mu.RLock()
+	history := append([]*runtimev1.Envelope(nil), s.streamEvents[id]...)
+	times := append([]time.Time(nil), s.streamEventTimes[id]...)
+	s.mu.RUnlock()
+	stageRows := make([][3]string, 0, 8)
+	var lastT time.Time
+	for i := range history {
+		if i >= len(times) {
+			break
+		}
+		env := history[i]
+		if env == nil || env.GetRunEvent() == nil {
+			continue
+		}
+		t := times[i]
+		if st := env.GetRunEvent().GetStatus(); st != nil {
+			delta := ""
+			if !lastT.IsZero() {
+				delta = fmt.Sprintf("%d", t.Sub(lastT).Milliseconds())
+			}
+			stageRows = append(stageRows, [3]string{st.Status, t.Format(time.RFC3339), delta})
+			lastT = t
+		}
+	}
+	var lastErrCode, lastErrMsg, hint string
+	for i := len(history) - 1; i >= 0; i-- {
+		evt := history[i].GetRunEvent()
+		if evt == nil {
+			continue
+		}
+		if e := evt.GetError(); e != nil {
+			lastErrCode = e.Code
+			lastErrMsg = e.Message
+			hint = errorHintForCode(e.Code)
+			break
+		}
+	}
+	var stats map[string]any
+	for i := len(history) - 1; i >= 0; i-- {
+		evt := history[i].GetRunEvent()
+		if evt == nil {
+			continue
+		}
+		if c := evt.GetCompleted(); c != nil && strings.TrimSpace(c.StatsJson) != "" {
+			_ = json.Unmarshal([]byte(c.StatsJson), &stats)
+			break
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, "<!DOCTYPE html><html><head><meta charset=\"utf-8\" /><title>Run Detail</title><style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:24px;background:#0d1117;color:#e6edf3;max-width:1000px;margin:0 auto;line-height:1.5}h2{margin:0 0 24px 0;font-size:24px;font-weight:600}h3{margin:0 0 16px 0;font-size:16px;color:#c9d1d9}table{border-collapse:collapse;width:100%;background:#161b22;border-radius:6px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)}th,td{border-bottom:1px solid #30363d;padding:12px 16px;font-size:13px}th{background:#21262d;text-align:left;font-weight:600;color:#8b949e}tr{transition:background 0.2s ease}tr:hover{background:#1f242c}tr:last-child td{border-bottom:none}code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;background:rgba(110,118,129,0.4);padding:2px 6px;border-radius:4px;font-size:12px}.panel{margin-top:24px;border:1px solid #30363d;padding:20px;border-radius:8px;background:#161b22;box-shadow:0 1px 3px rgba(0,0,0,0.1)}.err{color:#f85149;padding:12px;background:rgba(248,81,73,0.1);border-left:4px solid #f85149;border-radius:4px;margin-bottom:12px}.ok{color:#3fb950}pre{background:#0d1117;padding:16px;border-radius:6px;border:1px solid #30363d;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:13px;color:#e6edf3}.hint{color:#8b949e;font-size:13px;display:flex;align-items:center;gap:6px;margin-top:8px}.hint::before{content:'💡';font-size:14px}a.back{display:inline-flex;align-items:center;gap:6px;color:#8b949e;text-decoration:none;margin-bottom:24px;transition:color 0.2s ease}a.back:hover{color:#e6edf3}a.back::before{content:'←'}</style></head><body>") //nolint:errcheck
+	fmt.Fprintf(w, "<a href=\"/console\" class=\"back\">Back to Console</a><h2>Run %s</h2>", htmlEscape(id))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                //nolint:errcheck
+	if len(stageRows) > 0 {
+		fmt.Fprint(w, "<div class=\"panel\"><h3>Stages</h3><table><thead><tr><th>stage</th><th>time</th><th>delta_ms</th></tr></thead><tbody>") //nolint:errcheck
+		for _, row := range stageRows {
+			fmt.Fprintf(w, "<tr><td>%s</td><td><code>%s</code></td><td><code>%s</code></td></tr>", htmlEscape(row[0]), htmlEscape(row[1]), htmlEscape(row[2])) //nolint:errcheck
+		}
+		fmt.Fprint(w, "</tbody></table></div>") //nolint:errcheck
+	} else {
+		fmt.Fprint(w, "<div class=\"panel\"><h3>Stages</h3><div class=\"err\" style=\"background:transparent;border:1px dashed #30363d;color:#8b949e;text-align:center;padding:32px;\">No stages recorded yet.</div></div>") //nolint:errcheck
+	}
+	if lastErrCode != "" {
+		fmt.Fprintf(w, "<div class=\"panel\"><h3>Error</h3><div class=\"err\"><strong>%s</strong>: %s</div>", htmlEscape(lastErrCode), htmlEscape(lastErrMsg)) //nolint:errcheck
+		if hint != "" {
+			fmt.Fprintf(w, "<div class=\"hint\">%s</div>", htmlEscape(hint)) //nolint:errcheck
+		}
+		fmt.Fprint(w, "</div>") //nolint:errcheck
+	}
+	if stats != nil {
+		b, _ := json.MarshalIndent(stats, "", "  ")
+		fmt.Fprintf(w, "<div class=\"panel\"><h3>Stats</h3><pre>%s</pre></div>", htmlEscape(string(b))) //nolint:errcheck
+	}
+	fmt.Fprint(w, "</body></html>") //nolint:errcheck
+}
+
+func errorHintForCode(code string) string {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "RUNTIME_NOT_CONFIGURED":
+		return "在 worker-config.yaml 的 runtimes 下添加该 runtime 配置"
+	case "RUNTIME_IMAGE_EMPTY":
+		return "为该 runtime 设置镜像名"
+	case "EXEC_COMMAND_EMPTY":
+		return "为该 runtime 配置可执行命令"
+	case "DOCKER_RUN_FAILED":
+		return "检查镜像是否存在与启动命令"
+	case "DOCKER_WAIT_FAILED":
+		return "容器异常退出，查看 agent.stderr.log"
+	case "NETWORK_ALLOWLIST_EMPTY":
+		return "在 worker-config.yaml 配置 network_allowlist"
+	case "NETWORK_ALLOWLIST_INVALID":
+		return "修正 allowlist 规则格式"
+	case "DOCKER_NETWORK_CREATE_FAILED":
+		return "检查 Docker 权限与 network 名称冲突"
+	case "DOCKER_NET_POLICY_FAILED":
+		return "检查策略镜像与网络连接"
+	default:
+		return ""
+	}
 }

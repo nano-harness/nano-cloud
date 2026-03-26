@@ -10,8 +10,9 @@ services:
     ports:
       - "8081:8081"
     volumes:
-      - ./data:/data
-    command: ["-addr", ":8081", "-token", "dev-token", "-config-store-dir", "/data"]
+      - ./.workdir/data:/data
+    command:
+      ["-addr", ":8081", "-token", "dev-token", "-config-store-dir", "/data"]
     restart: unless-stopped
 
   worker:
@@ -26,8 +27,9 @@ services:
         DOCKER_CLI_IMAGE: ${DOCKER_CLI_IMAGE:-docker.m.daocloud.io/library/docker:${DOCKER_CLI_VERSION:-28.5.1}-cli}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./workspace:/workspace
-      - ./state:/state
+      - ./.workdir/workspace:/workspace
+      - ./.workdir/state:/state
+      - ./.workdir/logs:/logs
     environment:
       - NANO_API_KEY=${NANO_API_KEY}
       - NANO_BASE_URL=${NANO_BASE_URL}
@@ -43,11 +45,13 @@ services:
       - "-workspace-root"
       - "/workspace"
       - "-host-workspace-root"
-      - "${PWD}/workspace"
+      - "${PWD}/.workdir/workspace"
       - "-host-state-root"
-      - "${PWD}/state"
+      - "${PWD}/.workdir/state"
       - "-state-dir"
       - "/state"
+      - "-log-root"
+      - "/logs"
     depends_on:
       - gateway
     restart: unless-stopped

@@ -62,8 +62,22 @@ func NewWorkerConfigStore(dir string) (*WorkerConfigStore, error) {
 	return s, nil
 }
 
+const defaultAgentConfigYAML = `cli:
+  claude_code:
+    env:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    args: ["--model", "claude-3-7-sonnet"]
+  opencode:
+    env:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+    args: ["--model", "gpt-4o-mini"]
+`
+
 func (s *WorkerConfigStore) ensureLayout() error {
 	if err := os.MkdirAll(filepath.Join(s.dir, "workers"), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(s.dir, "defaults"), 0o755); err != nil {
 		return err
 	}
 	if err := s.ensureJSONFile(filepath.Join(s.dir, "pairing_requests.json"), pairingRequestsFile{Requests: []PairingRequest{}}); err != nil {
@@ -72,6 +86,46 @@ func (s *WorkerConfigStore) ensureLayout() error {
 	if err := s.ensureJSONFile(filepath.Join(s.dir, "worker_index.json"), workerIndexFile{TokenHashToWorkerID: map[string]string{}}); err != nil {
 		return err
 	}
+
+	// Initialize default templates if they don't exist
+	workerTplPath := filepath.Join(s.dir, "defaults", "worker.yaml")
+	if _, err := os.Stat(workerTplPath); os.IsNotExist(err) {
+		defaultCfg := worker.Config{
+			RelayURL:       "",
+			Token:          "",
+			WorkerID:       "",
+			Name:           "nano-worker",
+			Version:        "2.0",
+			Labels:         []string{},
+			WorkspaceRoot:  "",
+			EnvPassthrough: []string{"NANO_API_KEY", "NANO_BASE_URL", "NANO_MODEL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"},
+			Runtimes: map[string]worker.RuntimeConfig{
+				"nano_agent": {
+					Image: "nano-agent-runtime:local",
+				},
+				"claude_code": {
+					Image: "nano-cli-runtime:local",
+					Env:   map[string]string{"RUNTIME_BIN": "claude"},
+				},
+				"opencode": {
+					Image: "nano-cli-runtime:local",
+					Env:   map[string]string{"RUNTIME_BIN": "opencode"},
+				},
+				"custom": {
+					Image: "nano-cli-runtime:local",
+					Env:   map[string]string{"RUNTIME_BIN": "/bin/echo"},
+				},
+			},
+		}
+		b, _ := yaml.Marshal(&defaultCfg)
+		_ = os.WriteFile(workerTplPath, b, 0o644)
+	}
+
+	agentTplPath := filepath.Join(s.dir, "defaults", "agent.yaml")
+	if _, err := os.Stat(agentTplPath); os.IsNotExist(err) {
+		_ = os.WriteFile(agentTplPath, []byte(defaultAgentConfigYAML), 0o644)
+	}
+
 	// Cleanup old enroll_tokens.json if exists
 	_ = os.Remove(filepath.Join(s.dir, "enroll_tokens.json"))
 	return nil
@@ -348,44 +402,64 @@ func (s *WorkerConfigStore) ensureWorkerConfigLocked(rec *WorkerRecord) (bool, e
 	now := time.Now().Unix()
 	changed := false
 	if rec.WorkerConfigYAML == "" {
-		defaultCfg := worker.Config{
-			RelayURL:       "",
-			Token:          "",
-			WorkerID:       rec.WorkerID,
-			Name:           "nano-worker",
-			Version:        "2.0",
-			Labels:         rec.Labels,
-			WorkspaceRoot:  "",
-			EnvPassthrough: []string{"NANO_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"},
-			Runtimes: map[string]worker.RuntimeConfig{
-				"nano_agent": {
-					Image: "nano-agent-runtime:local",
-				},
-				"claude_code": {
-					Image: "nano-cli-runtime:local",
-					Env:   map[string]string{"RUNTIME_BIN": "claude"},
-				},
-				"opencode": {
-					Image: "nano-cli-runtime:local",
-					Env:   map[string]string{"RUNTIME_BIN": "opencode"},
-				},
-				"custom": {
-					Image: "nano-cli-runtime:local",
-					Env:   map[string]string{"RUNTIME_BIN": "/bin/echo"},
-				},
-			},
+		workerTplPath := filepath.Join(s.dir, "defaults", "worker.yaml")
+		b, err := os.ReadFile(workerTplPath)
+		if err == nil {
+			var cfg worker.Config
+			if yaml.Unmarshal(b, &cfg) == nil {
+				cfg.WorkerID = rec.WorkerID
+				if len(rec.Labels) > 0 {
+					cfg.Labels = rec.Labels
+				}
+				if out, err := yaml.Marshal(&cfg); err == nil {
+					rec.WorkerConfigYAML = string(out)
+				}
+			}
 		}
-		b, err := yaml.Marshal(&defaultCfg)
-		if err != nil {
-			return false, err
+		// Fallback if file read/parse failed
+		if rec.WorkerConfigYAML == "" {
+			defaultCfg := worker.Config{
+				RelayURL:       "",
+				Token:          "",
+				WorkerID:       rec.WorkerID,
+				Name:           "nano-worker",
+				Version:        "2.0",
+				Labels:         rec.Labels,
+				WorkspaceRoot:  "",
+				EnvPassthrough: []string{"NANO_API_KEY", "NANO_BASE_URL", "NANO_MODEL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"},
+				Runtimes: map[string]worker.RuntimeConfig{
+					"nano_agent": {
+						Image: "nano-agent-runtime:local",
+					},
+					"claude_code": {
+						Image: "nano-cli-runtime:local",
+						Env:   map[string]string{"RUNTIME_BIN": "claude"},
+					},
+					"opencode": {
+						Image: "nano-cli-runtime:local",
+						Env:   map[string]string{"RUNTIME_BIN": "opencode"},
+					},
+					"custom": {
+						Image: "nano-cli-runtime:local",
+						Env:   map[string]string{"RUNTIME_BIN": "/bin/echo"},
+					},
+				},
+			}
+			b, _ := yaml.Marshal(&defaultCfg)
+			rec.WorkerConfigYAML = string(b)
 		}
-		rec.WorkerConfigYAML = string(b)
 		rec.UpdatedAtUnix = now
 		changed = true
 	}
 
 	if rec.AgentConfigYAML == "" {
-		rec.AgentConfigYAML = "cli:\n  claude_code:\n    env:\n      ANTHROPIC_API_KEY: \"${ANTHROPIC_API_KEY}\"\n    args: [\"--model\", \"claude-3-7-sonnet\"]\n  opencode:\n    env:\n      OPENAI_API_KEY: \"${OPENAI_API_KEY}\"\n    args: [\"--model\", \"gpt-4o-mini\"]\n"
+		agentTplPath := filepath.Join(s.dir, "defaults", "agent.yaml")
+		b, err := os.ReadFile(agentTplPath)
+		if err == nil && len(b) > 0 {
+			rec.AgentConfigYAML = string(b)
+		} else {
+			rec.AgentConfigYAML = defaultAgentConfigYAML
+		}
 		rec.UpdatedAtUnix = now
 		changed = true
 	}

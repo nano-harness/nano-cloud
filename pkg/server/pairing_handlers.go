@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -35,17 +36,16 @@ func (s *GatewayServer) handleWorkerPairingStart(w http.ResponseWriter, r *http.
 
 	id, secret, userCode, err := s.configStore.CreatePairingRequest(req.WorkerName, req.HostInfo, req.Labels)
 	if err != nil {
-		s.logger.WithError(err).Error("failed to create pairing request")
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(pairingStartResponse{ //nolint:errcheck
+	_ = json.NewEncoder(w).Encode(pairingStartResponse{
 		ID:        id,
 		UserCode:  userCode,
 		Secret:    secret,
-		ExpiresAt: 0, // Store handles TTL, client just needs to know it's temp
+		ExpiresAt: time.Now().Add(PairingTTL).Unix(),
 	})
 }
 
@@ -73,7 +73,7 @@ func (s *GatewayServer) handleWorkerPairingStatus(w http.ResponseWriter, r *http
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(pairingStatusResponse{ //nolint:errcheck
+	_ = json.NewEncoder(w).Encode(pairingStatusResponse{
 		Status:      status,
 		WorkerToken: token,
 	})
@@ -89,7 +89,7 @@ func (s *GatewayServer) handleAdminListPairingRequests(w http.ResponseWriter, r 
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"requests": reqs}) //nolint:errcheck
+	_ = json.NewEncoder(w).Encode(map[string]any{"requests": reqs})
 }
 
 func (s *GatewayServer) handleAdminApprovePairingRequest(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +106,7 @@ func (s *GatewayServer) handleAdminApprovePairingRequest(w http.ResponseWriter, 
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"approved": true}) //nolint:errcheck
+	_ = json.NewEncoder(w).Encode(map[string]bool{"approved": true})
 }
 
 func (s *GatewayServer) handleAdminApprovePairingRequestByCode(w http.ResponseWriter, r *http.Request) {
@@ -123,8 +123,9 @@ func (s *GatewayServer) handleAdminApprovePairingRequestByCode(w http.ResponseWr
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"approved": true}) //nolint:errcheck
+	_ = json.NewEncoder(w).Encode(map[string]bool{"approved": true})
 }
+
 func (s *GatewayServer) handleAdminRejectPairingRequest(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
@@ -139,5 +140,5 @@ func (s *GatewayServer) handleAdminRejectPairingRequest(w http.ResponseWriter, r
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"rejected": true}) //nolint:errcheck
+	_ = json.NewEncoder(w).Encode(map[string]bool{"rejected": true})
 }

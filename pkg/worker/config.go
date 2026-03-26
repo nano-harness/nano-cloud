@@ -33,6 +33,7 @@ type Config struct { //nolint:revive
 	HostWorkspaceRoot  string                   `yaml:"host_workspace_root"`
 	HostStateRoot      string                   `yaml:"host_state_root"`
 	StateDir           string                   `yaml:"state_dir"`
+	LogRoot            string                   `yaml:"log_root"`
 	EnvPassthrough     []string                 `yaml:"env_passthrough"`
 	AgentConfigPath    string                   `yaml:"agent_config_path"`
 	Runtimes           map[string]RuntimeConfig `yaml:"runtimes"`

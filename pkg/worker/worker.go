@@ -56,8 +56,67 @@ type runState struct {
 	cmd      *exec.Cmd
 }
 
+func redactSensitive(s string) string {
+	r := s
+	if idx := strings.Index(r, "Incorrect API key provided: "); idx >= 0 {
+		j := idx + len("Incorrect API key provided: ")
+		end := j
+		for end < len(r) && r[end] != ' ' && r[end] != '"' && r[end] != ',' && r[end] != '\n' {
+			end++
+		}
+		r = r[:j] + "[redacted]" + r[end:]
+	}
+	return r
+}
+
+// openLogFiles opens agent log files in the workspace directory and optionally
+// in the centralized log directory.  It returns two file slices: one for stdout
+// and one for stderr.  The caller must close all returned files.
+func openLogFiles(workspaceDir string, logDir string) (stdoutFiles []*os.File, stderrFiles []*os.File) {
+	openLog := func(dir, name string) *os.File {
+		f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			logrus.Warnf("failed to open log file %s/%s: %v", dir, name, err)
+			return nil
+		}
+		return f
+	}
+	if f := openLog(workspaceDir, "agent.stdout.log"); f != nil {
+		stdoutFiles = append(stdoutFiles, f)
+	}
+	if f := openLog(workspaceDir, "agent.stderr.log"); f != nil {
+		stderrFiles = append(stderrFiles, f)
+	}
+	if logDir != "" {
+		if f := openLog(logDir, "agent.stdout.log"); f != nil {
+			stdoutFiles = append(stdoutFiles, f)
+		}
+		if f := openLog(logDir, "agent.stderr.log"); f != nil {
+			stderrFiles = append(stderrFiles, f)
+		}
+	}
+	return stdoutFiles, stderrFiles
+}
+
+func closeLogFiles(files []*os.File) {
+	for _, f := range files {
+		if f != nil {
+			_ = f.Close()
+		}
+	}
+}
+
+func writeToLogFiles(files []*os.File, line string) {
+	for _, f := range files {
+		if f != nil {
+			_, _ = f.WriteString(line)
+		}
+	}
+}
+
 func New(cfg *Config) *Worker { //nolint:revive
 	l := logrus.New()
+	l.SetOutput(os.Stdout)
 	return &Worker{
 		cfg:    cfg,
 		logger: l,
@@ -135,6 +194,8 @@ func (w *Worker) Start(ctx context.Context) error { //nolint:revive
 		return err
 	}
 
+	w.logger.Infof("Worker %s starting...", w.cfg.WorkerID)
+
 	if w.cfg.StateDir != "" {
 		go w.remoteConfigLoop(ctx)
 	}
@@ -174,6 +235,9 @@ func (w *Worker) connectAndServe(parentCtx context.Context) error {
 	if err != nil {
 		return err
 	}
+	cfg := w.getConfig()
+	w.logger.Infof("Worker %s successfully connected to gateway %s", cfg.WorkerID, cfg.RelayURL)
+
 	w.writeMu.Lock()
 	w.conn = conn
 	w.writeMu.Unlock()
@@ -201,7 +265,7 @@ func (w *Worker) connectAndServe(parentCtx context.Context) error {
 		}
 	}()
 
-	cfg := w.getConfig()
+	cfg = w.getConfig()
 
 	hello := &runtimev1.WorkerHello{
 		Name:              cfg.Name,
@@ -406,6 +470,36 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 		_ = w.sendCompleted(streamID, false, 1, "")
 		return
 	}
+	metaPath := filepath.Join(workspaceDir, ".nano-workspace.json")
+	wsMeta, _ := json.Marshal(map[string]string{"run_id": streamID, "workspace_id": workspaceID})
+	_ = os.WriteFile(metaPath, wsMeta, 0o644)
+
+	// Set up centralized log directory if configured
+	logDir := ""
+	if cfg.LogRoot != "" {
+		logRoot := filepath.Clean(cfg.LogRoot)
+		sanitizedStreamID := runtime.Sanitize(streamID)
+		candidateDir := filepath.Join(logRoot, sanitizedStreamID)
+		logDir = filepath.Clean(candidateDir)
+
+		// Ensure the resolved log directory stays within the configured log root
+		logRootWithSep := logRoot + string(os.PathSeparator)
+		logDirWithSep := logDir + string(os.PathSeparator)
+		if !strings.HasPrefix(logDirWithSep, logRootWithSep) {
+			w.logger.Warnf("resolved log directory %s escapes log root %s; disabling logging for this run", logDir, logRoot)
+			logDir = ""
+		} else if err := os.MkdirAll(logDir, 0o755); err != nil {
+			w.logger.Warnf("failed to create log directory %s: %v", logDir, err)
+			logDir = ""
+		} else {
+			runMeta, _ := json.Marshal(map[string]string{
+				"run_id":       streamID,
+				"workspace_id": workspaceID,
+				"started_at":   time.Now().UTC().Format(time.RFC3339),
+			})
+			_ = os.WriteFile(filepath.Join(logDir, ".nano-run.json"), runMeta, 0o644)
+		}
+	}
 
 	runtimeKey := strings.ToLower(strings.TrimPrefix(req.Runtime.String(), "RUNTIME_"))
 	runtimeCfg, ok := cfg.Runtimes[runtimeKey]
@@ -511,6 +605,9 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 		for k, v := range env {
 			localCmd.Env = append(localCmd.Env, fmt.Sprintf("%s=%s", k, v))
 		}
+		stdoutFiles, stderrFiles := openLogFiles(workspaceDir, logDir)
+		defer closeLogFiles(stdoutFiles)
+		defer closeLogFiles(stderrFiles)
 		stdout, err := localCmd.StdoutPipe()
 		if err != nil {
 			_ = w.sendError(streamID, "EXEC_STDOUT_PIPE_FAILED", err.Error(), "")
@@ -547,9 +644,12 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 			for s.Scan() {
 				line := s.Text()
 				if isStderr {
-					_ = w.sendError(streamID, "STDERR", line, "")
+					redacted := redactSensitive(line)
+					writeToLogFiles(stderrFiles, redacted+"\n")
+					_ = w.sendError(streamID, "STDERR", redacted, "")
 					continue
 				}
+				writeToLogFiles(stdoutFiles, line+"\n")
 				_ = w.sendAssistantDelta(streamID, line+"\n")
 			}
 			if err := s.Err(); err != nil {
@@ -717,11 +817,16 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 
 		_ = w.sendStatus(streamID, "running", containerName)
 
+		policyStdoutFiles, policyStderrFiles := openLogFiles(workspaceDir, logDir)
+		defer closeLogFiles(policyStdoutFiles)
+		defer closeLogFiles(policyStderrFiles)
 		rs.logs, _ = DockerLogsFollow(ctx, containerName, func(isStderr bool, line string) {
 			if isStderr {
-				_ = w.sendError(streamID, "STDERR", line, "")
+				writeToLogFiles(policyStderrFiles, redactSensitive(line)+"\n")
+				_ = w.sendError(streamID, "STDERR", redactSensitive(line), "")
 				return
 			}
+			writeToLogFiles(policyStdoutFiles, line+"\n")
 			_ = w.sendAssistantDelta(streamID, line+"\n")
 		})
 
@@ -781,11 +886,16 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 
 	_ = w.sendStatus(streamID, "running", containerName)
 
+	stdoutLogFiles, stderrLogFiles := openLogFiles(workspaceDir, logDir)
+	defer closeLogFiles(stdoutLogFiles)
+	defer closeLogFiles(stderrLogFiles)
 	rs.logs, _ = DockerLogsFollow(ctx, containerName, func(isStderr bool, line string) {
 		if isStderr {
-			_ = w.sendError(streamID, "STDERR", line, "")
+			writeToLogFiles(stderrLogFiles, redactSensitive(line)+"\n")
+			_ = w.sendError(streamID, "STDERR", redactSensitive(line), "")
 			return
 		}
+		writeToLogFiles(stdoutLogFiles, line+"\n")
 		_ = w.sendAssistantDelta(streamID, line+"\n")
 	})
 
@@ -843,11 +953,20 @@ func (w *Worker) sendCompleted(streamID string, success bool, exitCode int32, st
 }
 
 func (w *Worker) sendError(streamID string, code string, message string, detailsJSON string) error {
-	w.logger.WithFields(logrus.Fields{
+	fields := logrus.Fields{
 		"stream_id": streamID,
 		"code":      code,
 		"message":   message,
-	}).Error("run error")
+	}
+	if code == "STDERR" {
+		w.logger.WithFields(fields).Info("run stderr")
+		// For standard error output from the agent, we don't send it as an EVENT_KIND_ERROR
+		// since it's just regular informational logs from the agent process.
+		// Sending it as EVENT_KIND_ERROR would cause the gateway/client to treat it as a task failure.
+		return nil
+	}
+
+	w.logger.WithFields(fields).Error("run error")
 	return w.sendRunEvent(streamID, &runtimev1.RunEvent{
 		Kind: runtimev1.EventKind_EVENT_KIND_ERROR,
 		Payload: &runtimev1.RunEvent_Error{Error: &runtimev1.Error{

@@ -416,10 +416,16 @@ if [ "$IS_LOCAL" -eq 1 ]; then
   # the host to the Compose service name so the port is correctly passed through.
   local_port=$(echo "$NEW_RELAY" | grep -oE ':[0-9]+' | head -1 | tr -d ':')
   if [ -z "$local_port" ]; then local_port="8081"; fi
-  RELAY_URL="ws://gateway:${local_port}" ${COMPOSE_CMD} up --build
+  RELAY_URL="ws://gateway:${local_port}" ${COMPOSE_CMD} up --build -d
+  echo ""
+  echo -e "${GREEN}Full stack is running in the background.${NC}"
+  echo -e "Use '${COMPOSE_CMD} logs -f' to view logs."
 else
   echo -e "${BLUE}Detected remote gateway URL.${NC}"
   echo "Starting Worker Only..."
   echo ""
-  ${COMPOSE_CMD} up worker --build --no-deps
+  ${COMPOSE_CMD} up worker --build --no-deps -d
+  echo ""
+  echo -e "${GREEN}Worker is running in the background.${NC}"
+  echo -e "Use '${COMPOSE_CMD} logs -f worker' to view logs."
 fi

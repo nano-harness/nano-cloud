@@ -1,9 +1,0 @@
-cli:
-  claude_code:
-    env:
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-    args: ["--model", "claude-3-7-sonnet"]
-  opencode:
-    env:
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
-    args: ["--model", "gpt-4o-mini"]

@@ -7,8 +7,8 @@ LIB_ROOT="$(cd "$ROOT_DIR/.." && pwd)"
 GATEWAY_ADDR="${GATEWAY_ADDR:-:8081}"
 GATEWAY_HTTP_BASE="${GATEWAY_HTTP_BASE:-http://localhost:8081}"
 GATEWAY_TOKEN="${GATEWAY_TOKEN:-dev-token}"
-CONFIG_STORE_DIR="${CONFIG_STORE_DIR:-$ROOT_DIR/data}"
-STATE_DIR="${STATE_DIR:-$HOME/.nano-cloud/state}"
+CONFIG_STORE_DIR="${CONFIG_STORE_DIR:-$ROOT_DIR/.workdir/data}"
+STATE_DIR="${STATE_DIR:-$ROOT_DIR/.workdir/state}"
 RUNTIME="${RUNTIME:-}"
 PROMPT="${PROMPT:-hello from nano-agent runtime local e2e}"
 NANO_AGENT_ENV_FILE="${NANO_AGENT_ENV_FILE:-$LIB_ROOT/nano-agent/.env}"
@@ -75,19 +75,44 @@ for i in $(seq 1 50); do
 done
 
 echo "[4/7] create pairing request (manual simulation)"
-PAIRING_SECRET="$(
+PAIRING_JSON="$(
   curl -sS -X POST "$GATEWAY_HTTP_BASE/v1/worker/pairing" \
     -H "Content-Type: application/json" \
-    -d '{"worker_name":"e2e-worker","host_info":"linux/amd64","labels":["docker-desktop"]}' | python3 -c 'import sys, json; out=json.load(sys.stdin); print(out["id"] + ":" + out["secret"])'
+    -d '{"worker_name":"e2e-worker","host_info":"linux/amd64","labels":["docker-desktop"]}'
 )"
-PAIRING_ID="${PAIRING_SECRET%:*}"
-PAIRING_KEY="${PAIRING_SECRET#*:}"
+PAIRING_ID="$(python3 - <<'PY' "$PAIRING_JSON"
+import json,sys
+data=json.loads(sys.argv[1])
+print(data["id"])
+PY
+)"
+PAIRING_KEY="$(python3 - <<'PY' "$PAIRING_JSON"
+import json,sys
+data=json.loads(sys.argv[1])
+print(data["secret"])
+PY
+)"
+PAIRING_CODE="$(python3 - <<'PY' "$PAIRING_JSON"
+import json,sys
+data=json.loads(sys.argv[1])
+print(data.get("user_code",""))
+PY
+)"
 echo "pairing_id=$PAIRING_ID"
+if [ -n "$PAIRING_CODE" ]; then
+  echo "user_code=$PAIRING_CODE"
+fi
 
 echo "[4.5/7] approve pairing request"
-curl -sS -X POST "$GATEWAY_HTTP_BASE/v1/admin/pairing/$PAIRING_ID/approve" \
-  -H "Authorization: Bearer $GATEWAY_TOKEN" \
-  -H "Content-Type: application/json"
+if [ -n "${E2E_APPROVE_METHOD:-}" ] && [ "${E2E_APPROVE_METHOD}" = "code" ] && [ -n "$PAIRING_CODE" ]; then
+  curl -sS -X POST "$GATEWAY_HTTP_BASE/v1/admin/pairing/code/$PAIRING_CODE/approve" \
+    -H "Authorization: Bearer $GATEWAY_TOKEN" \
+    -H "Content-Type: application/json"
+else
+  curl -sS -X POST "$GATEWAY_HTTP_BASE/v1/admin/pairing/$PAIRING_ID/approve" \
+    -H "Authorization: Bearer $GATEWAY_TOKEN" \
+    -H "Content-Type: application/json"
+fi
 
 echo "[5/7] start worker (remote bootstrap via pairing)"
 mkdir -p "$STATE_DIR"
@@ -121,7 +146,7 @@ cat > "$STATE_DIR/state.json" <<EOF
 }
 EOF
 
-"$ROOT_DIR/bin/worker" -relay "ws://localhost:8081" -state-dir "$STATE_DIR" &
+"$ROOT_DIR/bin/worker" -relay "ws://localhost:8081" -state-dir "$STATE_DIR" -workspace-root "$ROOT_DIR/.workdir/workspace" -log-root "$ROOT_DIR/.workdir/logs" &
 WORKER_PID=$!
 trap 'kill "$WORKER_PID" >/dev/null 2>&1 || true; kill "$GATEWAY_PID" >/dev/null 2>&1 || true' EXIT
 

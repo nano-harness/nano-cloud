@@ -27,6 +27,7 @@ type BootstrapConfig struct { //nolint:revive
 	HostWorkspaceRoot string
 	HostStateRoot     string
 	StateDir          string
+	LogRoot           string
 	Labels            []string
 	WorkerID          string
 }
@@ -82,9 +83,6 @@ func BootstrapFromRemote(ctx context.Context, boot BootstrapConfig) (*Config, er
 		strings.TrimSpace(os.Getenv("HTTPS_PROXY")) != "",
 		strings.TrimSpace(os.Getenv("NO_PROXY")),
 	)
-
-	// Precheck: check docker info
-	CheckDockerInfo(ctx)
 
 	statePath := filepath.Join(stateDir, "state.json")
 	workerCfgPath := filepath.Join(stateDir, "worker-config.yaml")
@@ -390,6 +388,9 @@ func parseAndMergeWorkerConfig(workerConfigYAML string, st bootstrapState, boot 
 	}
 	if cfg.HostStateRoot == "" && boot.HostStateRoot != "" {
 		cfg.HostStateRoot = boot.HostStateRoot
+	}
+	if cfg.LogRoot == "" && boot.LogRoot != "" {
+		cfg.LogRoot = boot.LogRoot
 	}
 	if len(cfg.Labels) == 0 && len(boot.Labels) > 0 {
 		cfg.Labels = boot.Labels
