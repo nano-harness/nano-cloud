@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -77,18 +78,6 @@ func TestPairingApproveByShortCodeFlow(t *testing.T) {
 	if pollOut.Status != PairingStatusApproved || strings.TrimSpace(pollOut.WorkerToken) == "" {
 		t.Fatalf("expected approved with worker_token")
 	}
-
-	// Fetch worker config using issued token (sanity)
-	cfgReq, _ := http.NewRequest(http.MethodGet, gateway.URL+"/v1/worker/config", nil)
-	cfgReq.Header.Set("Authorization", "Bearer "+pollOut.WorkerToken)
-	cfgResp, err := http.DefaultClient.Do(cfgReq)
-	if err != nil {
-		t.Fatalf("get config: %v", err)
-	}
-	defer cfgResp.Body.Close()
-	if cfgResp.StatusCode != http.StatusOK {
-		t.Fatalf("get config status=%d", cfgResp.StatusCode)
-	}
 }
 
 func TestConsoleApproveByCodePrefill(t *testing.T) {
@@ -132,10 +121,8 @@ func TestConsoleApproveByCodePrefill(t *testing.T) {
 	if cresp.StatusCode != http.StatusOK {
 		t.Fatalf("console status=%d", cresp.StatusCode)
 	}
-	// Read small body and check the code is present as value
-	buf := make([]byte, 4096)
-	n, _ := cresp.Body.Read(buf)
-	body := string(buf[:n])
+	bodyBytes, _ := io.ReadAll(cresp.Body)
+	body := string(bodyBytes)
 	if !strings.Contains(body, `value="`+code+`"`) {
 		t.Fatalf("console page should prefill code")
 	}

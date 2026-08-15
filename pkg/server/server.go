@@ -117,8 +117,6 @@ func (s *GatewayServer) setupRoutes() {
 	s.router.HandleFunc("/v1/worker/connect", s.handleWorkerConnect).Methods("GET")
 	s.router.HandleFunc("/v1/worker/poll", s.handleWorkerPoll).Methods("POST")
 	s.router.HandleFunc("/v1/worker/events", s.handleWorkerEvents).Methods("POST")
-	s.router.HandleFunc("/v1/worker/config", s.handleWorkerGetConfig).Methods("GET")
-	s.router.HandleFunc("/v1/worker/config/ack", s.handleWorkerConfigAck).Methods("POST")
 	s.router.HandleFunc("/v1/worker/pairing", s.handleWorkerPairingStart).Methods("POST")
 	s.router.HandleFunc("/v1/worker/pairing/{id}", s.handleWorkerPairingStatus).Methods("GET")
 	s.router.HandleFunc("/v1/admin/pairing", s.handleAdminListPairingRequests).Methods("GET")
@@ -126,8 +124,6 @@ func (s *GatewayServer) setupRoutes() {
 	s.router.HandleFunc("/v1/admin/pairing/code/{code}/approve", s.handleAdminApprovePairingRequestByCode).Methods("POST")
 	s.router.HandleFunc("/v1/admin/pairing/{id}/reject", s.handleAdminRejectPairingRequest).Methods("POST")
 	s.router.HandleFunc("/v1/admin/workers", s.handleAdminListWorkers).Methods("GET")
-	s.router.HandleFunc("/v1/admin/workers/{id}/config", s.handleAdminGetWorkerConfig).Methods("GET")
-	s.router.HandleFunc("/v1/admin/workers/{id}/config", s.handleAdminPutWorkerConfig).Methods("PUT")
 	s.router.HandleFunc("/v1/admin/workers/{id}", s.handleAdminDeleteWorker).Methods("DELETE")
 	s.router.HandleFunc("/v1/admin/workers/{id}/rotate-token", s.handleAdminRotateWorkerToken).Methods("POST")
 	s.router.HandleFunc("/v1/workers", s.handleListWorkers).Methods("GET")
@@ -135,6 +131,7 @@ func (s *GatewayServer) setupRoutes() {
 	s.router.HandleFunc("/v1/runs/{id}/events", s.handleRunEvents).Methods("GET")
 	s.router.HandleFunc("/v1/runs/{id}/cancel", s.handleCancelRun).Methods("POST")
 	s.router.HandleFunc("/console", s.handleConsole).Methods("GET")
+	s.router.HandleFunc("/console/runs", s.handleConsoleCreateRun).Methods("POST")
 	s.router.HandleFunc("/console/runs/{id}", s.handleConsoleRunDetail).Methods("GET")
 	s.router.HandleFunc("/console/login", s.handleConsoleLogin).Methods("POST")
 	s.router.HandleFunc("/console/logout", s.handleConsoleLogout).Methods("POST")
@@ -395,12 +392,12 @@ func (s *GatewayServer) handleWorkerConnect(w http.ResponseWriter, r *http.Reque
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		rec, err := s.configStore.GetConfigByWorkerToken(tok)
+		workerID, err := s.configStore.ValidateWorkerToken(tok)
 		if err != nil {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		expectedWorkerID = rec.WorkerID
+		expectedWorkerID = workerID
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -730,15 +727,23 @@ func (s *GatewayServer) handleCreateRun(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Prompt) == "" {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+	resp, status, message := s.createRun(req)
+	if status != http.StatusOK {
+		http.Error(w, message, status)
 		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
+}
+
+func (s *GatewayServer) createRun(req createRunRequest) (createRunResponse, int, string) {
+	if strings.TrimSpace(req.Prompt) == "" {
+		return createRunResponse{}, http.StatusBadRequest, "Bad Request"
 	}
 
 	runtime := parseRuntime(req.Runtime)
 	if runtime == runtimev1.Runtime_RUNTIME_UNSPECIFIED {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
+		return createRunResponse{}, http.StatusBadRequest, "Bad Request"
 	}
 
 	workerID := strings.TrimSpace(req.WorkerID)
@@ -746,8 +751,7 @@ func (s *GatewayServer) handleCreateRun(w http.ResponseWriter, r *http.Request) 
 		workerID = s.pickWorkerForRuntime(runtime)
 	}
 	if workerID == "" {
-		http.Error(w, "No worker available", http.StatusServiceUnavailable)
-		return
+		return createRunResponse{}, http.StatusServiceUnavailable, "No worker available"
 	}
 
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
@@ -760,8 +764,7 @@ func (s *GatewayServer) handleCreateRun(w http.ResponseWriter, r *http.Request) 
 	if strings.TrimSpace(req.Network) != "" {
 		v, ok := parseNetworkPolicy(req.Network)
 		if !ok {
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
+			return createRunResponse{}, http.StatusBadRequest, "Bad Request"
 		}
 		network = v
 	}
@@ -770,8 +773,7 @@ func (s *GatewayServer) handleCreateRun(w http.ResponseWriter, r *http.Request) 
 	if strings.TrimSpace(req.Approval) != "" {
 		v, ok := parseApprovalPolicy(req.Approval)
 		if !ok {
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
+			return createRunResponse{}, http.StatusBadRequest, "Bad Request"
 		}
 		approval = v
 	}
@@ -811,12 +813,11 @@ func (s *GatewayServer) handleCreateRun(w http.ResponseWriter, r *http.Request) 
 	s.streamLastAt[runID] = time.Now()
 	s.mu.Unlock()
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(createRunResponse{ //nolint:errcheck
+	return createRunResponse{
 		RunID:     runID,
 		WorkerID:  workerID,
 		EventsURL: fmt.Sprintf("/v1/runs/%s/events", runID),
-	})
+	}, http.StatusOK, ""
 }
 
 func allowTokenQuery() bool {
@@ -982,9 +983,6 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 		Labels          string
 		Supported       string
 		LastSeenUnixSec int64
-		ConfigPrefix    string
-		AppliedPrefix   string
-		ConfigApplied   bool
 	}
 	type consoleRunRow struct {
 		RunIDPrefix    string
@@ -1000,15 +998,6 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-
-	configByWorkerID := map[string]WorkerRecord{}
-	if s.configStore != nil {
-		if list, err := s.configStore.ListWorkers(); err == nil {
-			for _, rec := range list {
-				configByWorkerID[rec.WorkerID] = rec
-			}
-		}
-	}
 
 	s.mu.RLock()
 	publicWorkers := make([]consolePublicWorkerRow, 0, len(s.workers))
@@ -1032,21 +1021,6 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 			Supported:       strings.Join(rts, ","),
 			LastSeenUnixSec: sess.LastHeartbeat.Unix(),
 		})
-		rec, ok := configByWorkerID[id]
-		configPrefix := ""
-		appliedPrefix := ""
-		appliedOK := false
-		if ok {
-			configPrefix = rec.ConfigVersion
-			if len(configPrefix) > 12 {
-				configPrefix = configPrefix[:12]
-			}
-			appliedPrefix = rec.AppliedConfigVersion
-			if len(appliedPrefix) > 12 {
-				appliedPrefix = appliedPrefix[:12]
-			}
-			appliedOK = rec.ConfigVersion != "" && rec.ConfigVersion == rec.AppliedConfigVersion
-		}
 		workers = append(workers, consoleWorkerRow{
 			IDPrefix:        idPrefix,
 			Name:            sess.Hello.Name,
@@ -1054,9 +1028,6 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 			Labels:          labels,
 			Supported:       strings.Join(rts, ","),
 			LastSeenUnixSec: sess.LastHeartbeat.Unix(),
-			ConfigPrefix:    configPrefix,
-			AppliedPrefix:   appliedPrefix,
-			ConfigApplied:   appliedOK,
 		})
 	}
 
@@ -1090,6 +1061,16 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 	if len(runs) > 30 {
 		runs = runs[:30]
 	}
+	pendingPairingCount := 0
+	if loggedIn {
+		if reqs, err := s.configStore.ListPairingRequests(); err == nil {
+			for _, req := range reqs {
+				if req.Status == "pending" {
+					pendingPairingCount++
+				}
+			}
+		}
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -1101,6 +1082,41 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "</head><body>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      //nolint:errcheck
 	fmt.Fprint(w, "<h1>Nano Cloud Console</h1>")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        //nolint:errcheck
 	fmt.Fprintf(w, "<small>server_time=%s | workers_online=%d | runs_tracked=%d</small>", now.Format(time.RFC3339), len(publicWorkers), len(runs))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      //nolint:errcheck
+
+	runState := r.URL.Query().Get("run")
+	runReason := r.URL.Query().Get("reason")
+	fmt.Fprint(w, "<div class=\"panel\"><h2 style=\"margin-top:0\">GET STARTED</h2>") //nolint:errcheck
+	fmt.Fprint(w, "<ol style=\"margin:0;padding-left:20px\">")                        //nolint:errcheck
+	fmt.Fprint(w, "<li><span class=\"ok\">Gateway is running</span></li>")            //nolint:errcheck
+	if pendingPairingCount > 0 {
+		fmt.Fprintf(w, "<li><span class=\"bad\">%d worker pairing request(s) need approval below</span></li>", pendingPairingCount) //nolint:errcheck
+	} else if len(publicWorkers) > 0 {
+		fmt.Fprint(w, "<li><span class=\"ok\">Worker is online</span></li>") //nolint:errcheck
+	} else if loggedIn {
+		fmt.Fprint(w, "<li><span class=\"bad\">No worker is online yet. Run <code>make quickstart</code> and approve the worker code.</span></li>") //nolint:errcheck
+	} else {
+		fmt.Fprint(w, "<li>Login to approve workers and view private setup details.</li>") //nolint:errcheck
+	}
+	fmt.Fprint(w, "<li>Set LLM credentials in <code>.env</code> before creating real <code>nano_agent</code> runs.</li>") //nolint:errcheck
+	fmt.Fprint(w, "</ol>")                                                                                                //nolint:errcheck
+	if runState == "failed" {
+		fmt.Fprintf(w, "<div class=\"err\">Test run failed: %s</div>", htmlEscape(runReason)) //nolint:errcheck
+	}
+	if loggedIn {
+		fmt.Fprint(w, `<form method="post" action="/console/runs" style="margin-top:16px">
+			<label>Create a test run</label>
+			<select class="field" name="runtime">
+				<option value="nano_agent">nano_agent</option>
+				<option value="opencode">opencode</option>
+				<option value="claude_code">claude_code</option>
+				<option value="custom">custom</option>
+			</select>
+			<label>Prompt</label>
+			<input class="field" name="prompt" value="hello from nano cloud" />
+			<button class="btn" type="submit">Create Test Run</button>
+		</form>`) //nolint:errcheck
+	}
+	fmt.Fprint(w, "</div>") //nolint:errcheck
 
 	if authEnabled && !loggedIn {
 		fmt.Fprint(w, "<div class=\"panel\"><h2>LOGIN REQUIRED FOR SENSITIVE DATA</h2>") //nolint:errcheck
@@ -1193,16 +1209,10 @@ func (s *GatewayServer) handleConsole(w http.ResponseWriter, r *http.Request) {
 	if len(workers) == 0 {
 		fmt.Fprint(w, "<div class=\"empty-state\">No private workers registered.</div>") //nolint:errcheck
 	} else {
-		fmt.Fprint(w, "<table><thead><tr><th>id</th><th>name</th><th>version</th><th>labels</th><th>runtimes</th><th>config</th><th>applied</th><th>status</th><th>last_seen</th></tr></thead><tbody>") //nolint:errcheck
+		fmt.Fprint(w, "<table><thead><tr><th>id</th><th>name</th><th>version</th><th>labels</th><th>runtimes</th><th>last_seen</th></tr></thead><tbody>") //nolint:errcheck
 		for _, row := range workers {
 			last := time.Unix(row.LastSeenUnixSec, 0).Format(time.RFC3339)
-			statusClass := "bad"
-			statusText := "pending"
-			if row.ConfigApplied {
-				statusClass = "ok"
-				statusText = "applied"
-			}
-			fmt.Fprintf(w, "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td><td><code>%s</code></td><td><span class=\"%s\">%s</span></td><td><code>%s</code></td></tr>", htmlEscape(row.IDPrefix), htmlEscape(row.Name), htmlEscape(row.Version), htmlEscape(row.Labels), htmlEscape(row.Supported), htmlEscape(row.ConfigPrefix), htmlEscape(row.AppliedPrefix), statusClass, statusText, last) //nolint:errcheck
+			fmt.Fprintf(w, "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>", htmlEscape(row.IDPrefix), htmlEscape(row.Name), htmlEscape(row.Version), htmlEscape(row.Labels), htmlEscape(row.Supported), last) //nolint:errcheck
 		}
 		fmt.Fprint(w, "</tbody></table>") //nolint:errcheck
 	}
@@ -1360,6 +1370,40 @@ func (s *GatewayServer) handleConsoleLogout(w http.ResponseWriter, r *http.Reque
 	}
 	s.clearConsoleSessionCookie(w)
 	http.Redirect(w, r, "/console", http.StatusSeeOther)
+}
+
+func (s *GatewayServer) handleConsoleCreateRun(w http.ResponseWriter, r *http.Request) {
+	if s.consoleAuthEnabled() && !s.consoleSessionValid(r) {
+		http.Redirect(w, r, "/console?login=failed", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/console?run=bad_request", http.StatusSeeOther)
+		return
+	}
+	runtimeName := strings.TrimSpace(r.FormValue("runtime"))
+	if runtimeName == "" {
+		runtimeName = "nano_agent"
+	}
+	prompt := strings.TrimSpace(r.FormValue("prompt"))
+	if prompt == "" {
+		prompt = "hello from nano cloud"
+	}
+	resp, status, message := s.createRun(createRunRequest{
+		Runtime: runtimeName,
+		Prompt:  prompt,
+		Network: strings.TrimSpace(r.FormValue("network")),
+	})
+	if status != http.StatusOK {
+		q := url.Values{}
+		q.Set("run", "failed")
+		if message != "" {
+			q.Set("reason", message)
+		}
+		http.Redirect(w, r, "/console?"+q.Encode(), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/console/runs/"+url.PathEscape(resp.RunID), http.StatusSeeOther)
 }
 
 func (s *GatewayServer) handleConsoleRunDetail(w http.ResponseWriter, r *http.Request) {

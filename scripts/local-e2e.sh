@@ -51,14 +51,15 @@ go build -o "$ROOT_DIR/bin/gateway" ./cmd/gateway
 go build -o "$ROOT_DIR/bin/worker" ./cmd/worker
 
 echo "[2/7] build runtime images"
+export DOCKER_BUILDKIT=1
 if ! docker image inspect nano-agent-runtime:local >/dev/null 2>&1; then
-  docker build -t nano-agent-runtime:local -f "$ROOT_DIR/docker/nano-agent-runtime/Dockerfile" "$LIB_ROOT"
+  docker build --ssh default -t nano-agent-runtime:local -f "$ROOT_DIR/docker/nano-agent-runtime/Dockerfile" "$LIB_ROOT"
 fi
 if ! docker image inspect nano-cli-runtime:local >/dev/null 2>&1; then
-  docker build -t nano-cli-runtime:local -f "$ROOT_DIR/docker/cli-runtime/Dockerfile" "$LIB_ROOT"
+  docker build --ssh default -t nano-cli-runtime:local -f "$ROOT_DIR/docker/cli-runtime/Dockerfile" "$LIB_ROOT"
 fi
 if ! docker image inspect nano-net-policy-runtime:local >/dev/null 2>&1; then
-  docker build -t nano-net-policy-runtime:local -f "$ROOT_DIR/docker/net-policy-runtime/Dockerfile" "$LIB_ROOT"
+  docker build --ssh default -t nano-net-policy-runtime:local -f "$ROOT_DIR/docker/net-policy-runtime/Dockerfile" "$LIB_ROOT"
 fi
 
 echo "[3/7] start gateway"

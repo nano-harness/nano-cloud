@@ -130,15 +130,6 @@ func (w *Worker) getConfig() *Config {
 	return w.cfg
 }
 
-func (w *Worker) setConfig(cfg *Config) {
-	if cfg == nil {
-		return
-	}
-	w.cfgMu.Lock()
-	w.cfg = cfg
-	w.cfgMu.Unlock()
-}
-
 func (w *Worker) nextSeq() uint64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -195,10 +186,6 @@ func (w *Worker) Start(ctx context.Context) error { //nolint:revive
 	}
 
 	w.logger.Infof("Worker %s starting...", w.cfg.WorkerID)
-
-	if w.cfg.StateDir != "" {
-		go w.remoteConfigLoop(ctx)
-	}
 
 	backoff := 1 * time.Second
 	maxBackoff := 30 * time.Second
@@ -567,6 +554,7 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 		HostWorkspacePath: runHostWorkspacePath,
 		WorkerID:          cfg.WorkerID,
 		AgentConfigPath:   runHostAgentConfigPath,
+		AgentConfigDest:   runtimeCfg.AgentConfigDest,
 	})
 	if err != nil {
 		_ = w.sendError(streamID, "RUNTIME_SPEC_BUILD_FAILED", err.Error(), "")

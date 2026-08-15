@@ -191,12 +191,6 @@ func (s *WorkerConfigStore) ApprovePairingRequest(id string) error {
 		Labels:          file.Requests[idx].Labels,
 		CreatedAtUnix:   now,
 		UpdatedAtUnix:   now,
-		// ConfigVersion will be computed in ensureWorkerConfigLocked
-	}
-
-	// Initialize default config
-	if _, err := s.ensureWorkerConfigLocked(rec); err != nil {
-		return err
 	}
 
 	// Save Worker
@@ -273,9 +267,6 @@ func (s *WorkerConfigStore) ApprovePairingRequestByCode(userCode string) error {
 		UpdatedAtUnix:   now,
 	}
 
-	if _, err := s.ensureWorkerConfigLocked(&rec); err != nil {
-		return err
-	}
 	// Save Worker
 	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
 	if err := writeJSONAtomic(workerPath, &rec); err != nil {

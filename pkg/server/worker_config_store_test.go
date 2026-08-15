@@ -1,7 +1,6 @@
 package server
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -50,16 +49,13 @@ func TestWorkerConfigStore_PairingFlow(t *testing.T) {
 		t.Fatalf("expected worker token")
 	}
 
-	// 5. Verify Worker Created
-	rec, err := store.GetConfigByWorkerToken(token)
+	// 5. Verify Worker Created - validate token returns the worker ID
+	workerID, err := store.ValidateWorkerToken(token)
 	if err != nil {
-		t.Fatalf("GetConfigByWorkerToken: %v", err)
+		t.Fatalf("ValidateWorkerToken: %v", err)
 	}
-	if rec.ConfigVersion == "" {
-		t.Fatalf("expected config version")
-	}
-	if !strings.Contains(rec.WorkerConfigYAML, "worker_id: "+rec.WorkerID) {
-		t.Fatalf("expected worker config yaml to include worker_id")
+	if workerID == "" {
+		t.Fatalf("expected worker id")
 	}
 
 	// 6. Poll again (should be consumed/gone or handled as duplicate?

@@ -16,8 +16,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v2"
 )
 
 type BootstrapConfig struct { //nolint:revive
@@ -33,9 +31,8 @@ type BootstrapConfig struct { //nolint:revive
 }
 
 type bootstrapState struct {
-	WorkerID      string `json:"worker_id"`
-	WorkerToken   string `json:"worker_token"`
-	ConfigVersion string `json:"config_version"`
+	WorkerID    string `json:"worker_id"`
+	WorkerToken string `json:"worker_token"`
 }
 
 type enrollRequest struct {
@@ -45,17 +42,13 @@ type enrollRequest struct {
 }
 
 type enrollResponse struct {
-	WorkerID      string `json:"worker_id"`
-	WorkerToken   string `json:"worker_token"`
-	ConfigVersion string `json:"config_version"`
+	WorkerID    string `json:"worker_id"`
+	WorkerToken string `json:"worker_token"`
 }
 
-type getConfigResponse struct {
-	WorkerConfigYAML string `json:"worker_config_yaml"`
-	AgentConfigYAML  string `json:"agent_config_yaml,omitempty"`
-	ConfigVersion    string `json:"config_version"`
-}
-
+// BootstrapFromRemote enrolls or pairs with the gateway and returns a Config
+// populated with the worker ID, token, and bootstrap parameters. Configuration
+// is managed locally — no config is fetched from the gateway.
 func BootstrapFromRemote(ctx context.Context, boot BootstrapConfig) (*Config, error) { //nolint:revive
 	if boot.RelayURL == "" {
 		return nil, errors.New("relay_url is required")
@@ -85,8 +78,6 @@ func BootstrapFromRemote(ctx context.Context, boot BootstrapConfig) (*Config, er
 	)
 
 	statePath := filepath.Join(stateDir, "state.json")
-	workerCfgPath := filepath.Join(stateDir, "worker-config.yaml")
-	agentCfgPath := filepath.Join(stateDir, "agent-config.yaml")
 
 	st, _ := readBootstrapState(statePath)
 	if st.WorkerID == "" {
@@ -94,36 +85,6 @@ func BootstrapFromRemote(ctx context.Context, boot BootstrapConfig) (*Config, er
 	}
 
 	client := newBootstrapHTTPClient(baseURL)
-
-	fetchConfig := func() (*getConfigResponse, bool, int, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/worker/config", nil)
-		if err != nil {
-			return nil, false, 0, err
-		}
-		if st.WorkerToken != "" {
-			req.Header.Set("Authorization", "Bearer "+st.WorkerToken)
-		}
-		if st.ConfigVersion != "" {
-			req.Header.Set("If-None-Match", `"`+st.ConfigVersion+`"`)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, false, 0, err
-		}
-		defer resp.Body.Close() //nolint:errcheck
-
-		if resp.StatusCode == http.StatusNotModified {
-			return nil, true, resp.StatusCode, nil
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, false, resp.StatusCode, nil
-		}
-		var out getConfigResponse
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-			return nil, false, resp.StatusCode, err
-		}
-		return &out, false, resp.StatusCode, nil
-	}
 
 	enroll := func() error {
 		if boot.EnrollToken == "" {
@@ -153,7 +114,6 @@ func BootstrapFromRemote(ctx context.Context, boot BootstrapConfig) (*Config, er
 		}
 		st.WorkerID = out.WorkerID
 		st.WorkerToken = out.WorkerToken
-		st.ConfigVersion = ""
 		return writeBootstrapState(statePath, st)
 	}
 
@@ -254,8 +214,6 @@ func BootstrapFromRemote(ctx context.Context, boot BootstrapConfig) (*Config, er
 				case "approved":
 					fmt.Printf("\nWorker approved! Token received.\n")
 					st.WorkerToken = statusResp.WorkerToken
-					st.ConfigVersion = ""
-					// WorkerID is not in pairing response but will be fetched via config
 					return writeBootstrapState(statePath, st)
 				case "rejected":
 					return errors.New("pairing request rejected")
@@ -268,64 +226,15 @@ func BootstrapFromRemote(ctx context.Context, boot BootstrapConfig) (*Config, er
 		}
 	}
 
+	// If we already have a token from a previous bootstrap, reuse it.
+	// Note: the token is not verified here; if it has been revoked the
+	// worker connection will fail and the operator should clear state and
+	// re-enroll/pair.
 	if st.WorkerToken != "" {
-		cfgResp, notModified, status, err := fetchConfig()
-		if err != nil {
-			return nil, err
-		}
-		switch status {
-		case http.StatusOK:
-			if cfgResp == nil {
-				return nil, errors.New("empty config response")
-			}
-			if err := os.WriteFile(workerCfgPath, []byte(cfgResp.WorkerConfigYAML), 0o600); err != nil {
-				return nil, err
-			}
-			if cfgResp.AgentConfigYAML != "" {
-				if err := os.WriteFile(agentCfgPath, []byte(cfgResp.AgentConfigYAML), 0o600); err != nil {
-					return nil, err
-				}
-			}
-			st.ConfigVersion = cfgResp.ConfigVersion
-			_ = writeBootstrapState(statePath, st)
-			return parseAndMergeWorkerConfig(cfgResp.WorkerConfigYAML, st, boot, agentCfgPath)
-		case http.StatusNotModified:
-			if !notModified {
-				return nil, errors.New("unexpected not modified state")
-			}
-			wb, err := os.ReadFile(workerCfgPath)
-			if err == nil {
-				return parseAndMergeWorkerConfig(string(wb), st, boot, agentCfgPath)
-			}
-			st.ConfigVersion = ""
-			_ = writeBootstrapState(statePath, st)
-			cfgResp, _, status, err = fetchConfig()
-			if err != nil {
-				return nil, err
-			}
-			if status != http.StatusOK || cfgResp == nil {
-				return nil, fmt.Errorf("get config failed after cache miss: url=%s/v1/worker/config status=%d", baseURL, status)
-			}
-			if err := os.WriteFile(workerCfgPath, []byte(cfgResp.WorkerConfigYAML), 0o600); err != nil {
-				return nil, err
-			}
-			if cfgResp.AgentConfigYAML != "" {
-				if err := os.WriteFile(agentCfgPath, []byte(cfgResp.AgentConfigYAML), 0o600); err != nil {
-					return nil, err
-				}
-			}
-			st.ConfigVersion = cfgResp.ConfigVersion
-			_ = writeBootstrapState(statePath, st)
-			return parseAndMergeWorkerConfig(cfgResp.WorkerConfigYAML, st, boot, agentCfgPath)
-		case http.StatusUnauthorized:
-			st.WorkerToken = ""
-			st.ConfigVersion = ""
-			_ = writeBootstrapState(statePath, st)
-		default:
-			return nil, fmt.Errorf("get config failed: url=%s/v1/worker/config status=%d", baseURL, status)
-		}
+		return buildConfigFromBootstrap(st, boot), nil
 	}
 
+	// Need to enroll or pair
 	if boot.EnrollToken != "" {
 		if err := enroll(); err != nil {
 			return nil, err
@@ -335,75 +244,23 @@ func BootstrapFromRemote(ctx context.Context, boot BootstrapConfig) (*Config, er
 			return nil, err
 		}
 	}
-	cfgResp, _, status, err := fetchConfig()
-	if err != nil {
-		return nil, err
-	}
-	if status != http.StatusOK || cfgResp == nil {
-		return nil, fmt.Errorf("get config failed: url=%s/v1/worker/config status=%d", baseURL, status)
-	}
-	if err := os.WriteFile(workerCfgPath, []byte(cfgResp.WorkerConfigYAML), 0o600); err != nil {
-		return nil, err
-	}
-	if cfgResp.AgentConfigYAML != "" {
-		if err := os.WriteFile(agentCfgPath, []byte(cfgResp.AgentConfigYAML), 0o600); err != nil {
-			return nil, err
-		}
-	}
-	st.ConfigVersion = cfgResp.ConfigVersion
-	_ = writeBootstrapState(statePath, st)
 
-	return parseAndMergeWorkerConfig(cfgResp.WorkerConfigYAML, st, boot, agentCfgPath)
+	return buildConfigFromBootstrap(st, boot), nil
 }
 
-func parseAndMergeWorkerConfig(workerConfigYAML string, st bootstrapState, boot BootstrapConfig, agentCfgPath string) (*Config, error) {
-	var cfg Config
-	if err := yaml.Unmarshal([]byte(workerConfigYAML), &cfg); err != nil {
-		return nil, err
+// buildConfigFromBootstrap constructs a Config from bootstrap parameters and pairing state.
+func buildConfigFromBootstrap(st bootstrapState, boot BootstrapConfig) *Config {
+	return &Config{
+		RelayURL:          boot.RelayURL,
+		Token:             st.WorkerToken,
+		WorkerID:          st.WorkerID,
+		WorkspaceRoot:     boot.WorkspaceRoot,
+		HostWorkspaceRoot: boot.HostWorkspaceRoot,
+		HostStateRoot:     boot.HostStateRoot,
+		StateDir:          boot.StateDir,
+		LogRoot:           boot.LogRoot,
+		Labels:            boot.Labels,
 	}
-
-	if cfg.RelayURL == "" {
-		cfg.RelayURL = boot.RelayURL
-	} else if boot.RelayURL != "" {
-		// When the server's relay_url has no port, prefer boot.RelayURL which
-		// carries the explicitly configured port from the user's setup (e.g. via
-		// connect.sh or the -relay flag).  A portless server-side relay_url would
-		// otherwise cause the worker to connect on the scheme default (80/443)
-		// instead of the intended gateway port, producing a 502 error.
-		if u, err := url.Parse(cfg.RelayURL); err == nil && u.Port() == "" {
-			cfg.RelayURL = boot.RelayURL
-		}
-	}
-	if cfg.WorkerID == "" {
-		cfg.WorkerID = st.WorkerID
-	}
-	if cfg.Token == "" {
-		cfg.Token = st.WorkerToken
-	}
-	if cfg.WorkspaceRoot == "" && boot.WorkspaceRoot != "" {
-		cfg.WorkspaceRoot = boot.WorkspaceRoot
-	}
-	if cfg.HostWorkspaceRoot == "" && boot.HostWorkspaceRoot != "" {
-		cfg.HostWorkspaceRoot = boot.HostWorkspaceRoot
-	}
-	if cfg.HostStateRoot == "" && boot.HostStateRoot != "" {
-		cfg.HostStateRoot = boot.HostStateRoot
-	}
-	if cfg.LogRoot == "" && boot.LogRoot != "" {
-		cfg.LogRoot = boot.LogRoot
-	}
-	if len(cfg.Labels) == 0 && len(boot.Labels) > 0 {
-		cfg.Labels = boot.Labels
-	}
-
-	if cfg.AgentConfigPath == "" {
-		if b, err := os.ReadFile(agentCfgPath); err == nil && len(bytes.TrimSpace(b)) > 0 {
-			cfg.AgentConfigPath = agentCfgPath
-		}
-	}
-	cfg.EnrollToken = ""
-	cfg.StateDir = boot.StateDir
-	return &cfg, nil
 }
 
 func httpBaseURLFromRelayURL(relayURL string) (string, error) {

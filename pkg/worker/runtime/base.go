@@ -56,8 +56,8 @@ func (a *BaseAdapter) BuildSpec(ctx context.Context, req *runtimev1.RunRequest, 
 		delete(mounts, info.WorkspaceDir)
 	}
 
-	if info.AgentConfigPath != "" {
-		mounts[info.AgentConfigPath] = "/root/.config/nano/config.yaml"
+	if info.AgentConfigPath != "" && info.AgentConfigDest != "" {
+		mounts[info.AgentConfigPath] = info.AgentConfigDest
 	}
 
 	return &DockerRunSpec{

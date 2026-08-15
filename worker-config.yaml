@@ -1,0 +1,44 @@
+relay_url: ws://47.115.134.153:8081
+enroll_token: ""
+token: ""
+worker_id: ""
+name: nano-worker
+version: "2.0"
+labels:
+- docker-desktop
+workspace_root: /tmp/nano-workspaces
+host_workspace_root: ""
+host_state_root: ""
+state_dir: ""
+log_root: ""
+env_passthrough:
+- NANO_API_KEY
+- NANO_BASE_URL
+- NANO_MODEL
+- OPENAI_API_KEY
+- ANTHROPIC_API_KEY
+- HTTP_PROXY
+- HTTPS_PROXY
+- NO_PROXY
+- http_proxy
+- https_proxy
+- no_proxy
+agent_config_path: agent-config.yaml
+runtimes:
+  claude_code:
+    image: nano-cli-runtime:local
+    env:
+      RUNTIME_BIN: claude
+  custom:
+    image: nano-cli-runtime:local
+    env:
+      RUNTIME_BIN: /bin/echo
+  nano_agent:
+    image: nano-agent-runtime:local
+    agent_config_dest: /root/.config/nano/config.yaml
+  opencode:
+    image: nano-cli-runtime:local
+    env:
+      RUNTIME_BIN: opencode
+network_policy_image: ""
+network_allowlist: []

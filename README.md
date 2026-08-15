@@ -1,143 +1,129 @@
 # Nano Cloud
 
-The cloud infrastructure backend for the **Nano Agent** ecosystem. This repository provides the Gateway and Worker components that allow agents to execute tasks remotely in secure, isolated environments.
+[中文](./README.zh-CN.md)
+
+> Part of the [nano series](https://nano-harness.github.io) — minimal implementations of agent loops & harness engineering: [nano-symphony](https://github.com/nano-harness/nano-symphony) · [nano-agent](https://github.com/nano-harness/nano-agent) · [nano-cloud](https://github.com/nano-harness/nano-cloud). Pairs with the [harness-101](https://github.com/albert-lv/harness-101) course.
+
+Nano Cloud is the Gateway + Worker backend for the **Nano Agent** ecosystem. It lets agents execute tasks remotely in isolated Docker runtimes.
 
 ```mermaid
 graph TD
-    A[Nano Agent CLI] -->|WebSocket/HTTP| G[Nano Gateway]
+    A[Nano Agent CLI / API Client] -->|HTTP / SSE| G[Nano Gateway]
     W[Nano Worker] -->|WebSocket| G
     W -->|Spawns| D[Docker Container]
     D -->|Runs| R[Agent Runtime]
 ```
 
-## 📚 Documentation
+## What runs where?
 
-- **[Startup Guide](#quick-start)**: Start here! How to run the Gateway and Worker locally (see `scripts/setup-worker.sh`).
-- **[Configuration](configs/worker.example.yaml)**: Example `worker-config.yaml` plus config notes.
-- **[Deployment](deployment/deploy-gateway.sh)**: Deploy the Gateway to production servers (see `.github/workflows/deploy-gateway.yml`).
-- **[Protocol Design](proto/runtime/v1/runtime.proto)**: Technical specification of the Runtime Protocol V1.
+- **Gateway**: central HTTP/WebSocket server, Console, run dispatch, pairing approval.
+- **Worker**: connects to the Gateway and starts isolated Docker runtime containers.
+- **Runtime images**: `nano-agent-runtime`, `nano-cli-runtime`, and optional network-policy runtime used by the Worker.
 
-## Configuration Delivery
+## 3-minute quick start
 
-Gateway can deliver per-worker configuration via `/v1/worker/config` (ETag/If-None-Match). The payload contains:
+Use one entry point for first-time setup:
 
-- `worker_config_yaml`: Controls image/env/command per runtime (e.g. `claude_code`, `opencode`).
-- `agent_config_yaml`: Mounted into runtime containers at `/root/.config/nano/config.yaml`.
-
-### CLI Runtimes (Claude Code / OpenCode)
-
-The `nano-cli-runtime` image uses an entrypoint wrapper that reads the `cli` section from `/root/.config/nano/config.yaml` and applies env/args for the selected runtime.
-
-Example `agent_config_yaml`:
-
-```yaml
-cli:
-  claude_code:
-    env:
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-    args: ["--model", "claude-3-7-sonnet"]
-  opencode:
-    env:
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
-    args: ["--model", "gpt-4.1-mini"]
+```bash
+make quickstart
 ```
 
-## 🚀 Quick Start (Docker Compose)
+The wizard will:
 
-The easiest way to run the full stack locally.
+1. create `.env` from `.env.example` if needed;
+2. check Docker and Docker Compose;
+3. ask for Gateway URL, LLM base URL, API key, model, mirror, and Go proxy;
+4. build local runtime images when the sibling `../nano-agent` checkout is available;
+5. start Docker Compose;
+6. print the Console URL, approval steps, a sample run command, and diagnostics commands.
 
-1.  **Build Runtimes** (Required):
-    ```bash
-    # Build the agent runtime images
-    cd docker/nano-agent-runtime && docker build -t nano-agent-runtime:local .
-    # Build the CLI wrapper runtime image
-    cd ../cli-runtime && docker build -t nano-cli-runtime:local .
-    cd ../..
-    ```
+For the local default, open [http://localhost:8081/console](http://localhost:8081/console), login with `dev-token`, approve the pending Worker short code, then create a test run from the Console.
 
-2.  **Start Services**:
-    ```bash
-    # Configure and start services (Gateway + Worker)
-    ./scripts/connect.sh
-    # (Select 'ws://localhost:8081' when prompted)
-    ```
+> If runtime image build is skipped because `../nano-agent` is missing, clone `nano-agent` next to this repository or provide prebuilt runtime images before running real `nano_agent` tasks.
 
-3.  **Approve Worker**:
-    *   Open [http://localhost:8081/console](http://localhost:8081/console)
-    *   Login with token: `dev-token`
-    *   Look for "Pending Pairing Requests" and click **Approve**.
+## Daily commands
 
-4.  **Ready!**
-    *   Your worker is now online and ready to accept tasks.
+```bash
+make quickstart   # configure and start Gateway + Worker
+make logs         # follow compose logs
+make stop         # stop services
+make reset        # stop services and remove local .workdir state
+make test         # run Go tests
+```
 
-## 🌐 Remote Gateway Mode (Worker Only)
+## Remote Gateway mode
 
-If your Gateway is deployed remotely (e.g. `wss://nano-gateway.example.com`), you can use the interactive setup script:
+When connecting only a Worker to an existing remote Gateway:
 
-1.  **Run Configuration Wizard**:
-    ```bash
-    ./scripts/connect.sh
-    ```
-    
-2.  **Follow the prompts**:
-    *   Enter Gateway URL.
-    *   Enter LLM API Endpoint and Key.
-    *   (Optional) Configure advanced Nano Agent settings via `nano-agent.env`.
+```bash
+make quickstart
+```
 
-3.  **Approve**:
-    *   Go to your remote Gateway Console and approve the worker.
+Enter your remote relay URL, for example `wss://nano-gateway.example.com`. The wizard starts only the Worker service and prints the remote Console URL. Approve the Worker in that Console.
 
-The script will save your configuration to `.env` and start the worker automatically.
+## Configuration
 
-## 🛠 Manual Setup (Go)
+Most first-time users only need `.env`:
 
-If you prefer running binaries directly:
+- `RELAY_URL`: Gateway relay URL, such as `ws://localhost:8081` or `wss://your-gateway.com`.
+- `NANO_BASE_URL`: OpenAI-compatible LLM endpoint.
+- `NANO_API_KEY`: LLM API key.
+- `NANO_MODEL`: model name.
+- `DOCKERHUB_MIRROR`, `GOPROXY`: optional acceleration settings.
 
-1.  **Start Gateway**:
-    ```bash
-    go build -o bin/gateway ./cmd/gateway
-    ./bin/gateway -addr :8081 -token "dev-token" -config-store-dir ./data
-    ```
+Advanced Worker configuration lives in [`configs/worker.example.yaml`](configs/worker.example.yaml). The Worker CLI can also generate config files directly:
 
-2.  **Start Worker**:
-    ```bash
-    go build -o bin/worker ./cmd/worker
-    # Interactive setup (generates worker-config.yaml)
-    ./scripts/setup-worker.sh 
-    # Run worker
-    ./bin/worker -config worker-config.yaml
-    ```
+```bash
+go build -o bin/worker ./cmd/worker
+./bin/worker quickstart
+./bin/worker diagnose -relay ws://localhost:8081 --verbose
+```
 
-3.  **Approve**:
-    *   Check worker logs for "Request ID".
-    *   Go to Console and approve.
+## Console onboarding
 
-## 📂 Project Structure
+The Console shows:
 
-- **`cmd/`**: Application entry points.
-    - `gateway/`: The central server.
-    - `worker/`: The node that manages Docker containers.
-    - `runtime-*/`: Reference implementations of agent runtimes.
-- **`pkg/`**: Core library code (Server logic, Worker logic).
-- **`proto/`**: gRPC/Protobuf definitions for the runtime protocol.
-- **`configs/`**: Example configuration files.
-- **`deployment/`**: Scripts for deploying to cloud providers.
-- **`scripts/`**: Helper scripts for local setup and operations.
+- Gateway health and current Worker status;
+- pending Worker pairing requests and short-code approval;
+- a minimal test-run form;
+- recent runs, event links, and run detail diagnostics.
+
+## Troubleshooting
+
+Start with these commands:
+
+```bash
+make logs
+./bin/worker diagnose -relay ws://localhost:8081 --verbose
+```
+
+Common causes:
+
+- Docker daemon is not running.
+- Worker was not approved in the Console.
+- `NANO_API_KEY` or model settings are missing.
+- Runtime images are missing.
+- Proxy, Docker mirror, or `GOPROXY` settings are incorrect.
+
+More low-level local debugging steps are in [`LOCAL_DEBUG.md`](LOCAL_DEBUG.md).
+
+## Project structure
+
+- `cmd/`: binaries for Gateway, Worker, and runtimes.
+- `pkg/`: Gateway and Worker core logic.
+- `proto/`: Runtime Protocol V1 protobuf definitions.
+- `configs/`: example Worker configuration.
+- `deployment/`: production Gateway deployment helper.
+- `scripts/`: setup and local operation scripts.
+- `docker/`: Gateway, Worker, and runtime Dockerfiles.
 
 ## Development
 
-This project requires **Go 1.22+** and **Docker**.
+Requires Go 1.24+ and Docker.
 
-### Building
 ```bash
 go build ./...
-```
-
-### Testing
-```bash
 go test ./...
 ```
 
-## License
-
-See LICENSE file.
+Note: this repository currently uses `replace github.com/nano-harness/nano-agent => ../nano-agent`, so commands that build `cmd/runtime-nano-agent` require the sibling `../nano-agent` checkout.

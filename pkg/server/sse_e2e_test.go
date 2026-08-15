@@ -19,7 +19,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-	"gopkg.in/yaml.v2"
 )
 
 func TestRunEventsSSE_WithMockLLMStream(t *testing.T) {
@@ -371,59 +370,31 @@ func pairWorkerAndResolveID(t *testing.T, gatewayURL string, token string) (stri
 		t.Fatalf("expected worker token after approve")
 	}
 
-	getCfgReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/worker/config", nil)
+	// Resolve worker ID via admin list workers API
+	listReq, err := http.NewRequest(http.MethodGet, gatewayURL+"/v1/admin/workers", nil)
 	if err != nil {
-		t.Fatalf("build worker get config request: %v", err)
+		t.Fatalf("build admin list workers request: %v", err)
 	}
-	getCfgReq.Header.Set("Authorization", "Bearer "+approvedOut.WorkerToken)
-	getCfgResp, err := http.DefaultClient.Do(getCfgReq)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listResp, err := http.DefaultClient.Do(listReq)
 	if err != nil {
-		t.Fatalf("worker get config failed: %v", err)
+		t.Fatalf("admin list workers failed: %v", err)
 	}
-	defer getCfgResp.Body.Close()
-	if getCfgResp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(getCfgResp.Body)
-		t.Fatalf("worker get config status=%d body=%s", getCfgResp.StatusCode, string(raw))
+	defer listResp.Body.Close()
+	if listResp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(listResp.Body)
+		t.Fatalf("admin list workers status=%d body=%s", listResp.StatusCode, string(raw))
 	}
-	var cfgOut workerGetConfigResponse
-	cfgDecodeErr := json.NewDecoder(getCfgResp.Body).Decode(&cfgOut)
-	if cfgDecodeErr != nil {
-		t.Fatalf("decode worker get config response: %v", cfgDecodeErr)
+	var workers []struct {
+		WorkerID string `json:"worker_id"`
 	}
-	if cfgOut.ConfigVersion == "" || cfgOut.WorkerConfigYAML == "" {
-		t.Fatalf("expected non-empty worker config payload")
+	if err := json.NewDecoder(listResp.Body).Decode(&workers); err != nil {
+		t.Fatalf("decode admin list workers response: %v", err)
 	}
-
-	ackBody, err := json.Marshal(workerConfigAckRequest{ConfigVersion: cfgOut.ConfigVersion})
-	if err != nil {
-		t.Fatalf("marshal worker config ack request: %v", err)
+	if len(workers) == 0 {
+		t.Fatalf("expected at least one worker")
 	}
-	ackReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/worker/config/ack", bytes.NewReader(ackBody))
-	if err != nil {
-		t.Fatalf("build worker config ack request: %v", err)
-	}
-	ackReq.Header.Set("Authorization", "Bearer "+approvedOut.WorkerToken)
-	ackReq.Header.Set("Content-Type", "application/json")
-	ackResp, err := http.DefaultClient.Do(ackReq)
-	if err != nil {
-		t.Fatalf("worker config ack failed: %v", err)
-	}
-	defer ackResp.Body.Close()
-	if ackResp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(ackResp.Body)
-		t.Fatalf("worker config ack status=%d body=%s", ackResp.StatusCode, string(raw))
-	}
-
-	var workerCfg struct {
-		WorkerID string `yaml:"worker_id"`
-	}
-	if err := yaml.Unmarshal([]byte(cfgOut.WorkerConfigYAML), &workerCfg); err != nil {
-		t.Fatalf("unmarshal worker config yaml: %v", err)
-	}
-	if workerCfg.WorkerID == "" {
-		t.Fatalf("expected worker_id in worker config")
-	}
-	return workerCfg.WorkerID, approvedOut.WorkerToken
+	return workers[0].WorkerID, approvedOut.WorkerToken
 }
 
 func requestMockLLMAndCollectDeltas(url string) ([]string, error) {

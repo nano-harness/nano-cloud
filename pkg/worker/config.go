@@ -7,11 +7,12 @@ import (
 )
 
 type RuntimeConfig struct { //nolint:revive
-	Runner  string            `yaml:"runner"`
-	Image   string            `yaml:"image"`
-	Command []string          `yaml:"command"`
-	Env     map[string]string `yaml:"env"`
-	EnvFile string            `yaml:"env_file"` // New field
+	Runner          string            `yaml:"runner,omitempty"`
+	Image           string            `yaml:"image"`
+	Command         []string          `yaml:"command,omitempty"`
+	Env             map[string]string `yaml:"env,omitempty"`
+	EnvFile         string            `yaml:"env_file,omitempty"`
+	AgentConfigDest string            `yaml:"agent_config_dest,omitempty"`
 }
 
 type NetworkAllowRule struct { //nolint:revive

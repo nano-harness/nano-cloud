@@ -1,12 +1,113 @@
 #!/bin/bash
 set -e
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LIB_ROOT="$(cd "$ROOT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
+
 # Colors
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
+
+need_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo -e "${RED}Error: missing dependency '$1'.${NC}"
+    echo "Install $1 and rerun: make quickstart"
+    exit 1
+  fi
+}
+
+detect_compose_cmd() {
+  if command -v docker-compose >/dev/null 2>&1; then
+    echo "docker-compose"
+  elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    echo "docker compose"
+  else
+    echo ""
+  fi
+}
+
+COMPOSE_CMD="$(detect_compose_cmd)"
+
+run_preflight() {
+  echo -e "${BLUE}Preflight checks${NC}"
+  need_command docker
+  if [ -z "$COMPOSE_CMD" ]; then
+    echo -e "${RED}Error: neither docker-compose nor docker compose is available in PATH.${NC}"
+    echo "Install Docker Compose and rerun: make quickstart"
+    exit 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo -e "${RED}Error: Docker daemon is not reachable.${NC}"
+    echo "Start Docker Desktop or the Docker service, then rerun: make quickstart"
+    exit 1
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    echo -e "${YELLOW}Warning: curl is not installed; gateway probing and copyable test commands may be unavailable.${NC}"
+  fi
+  echo -e "${GREEN}OK: docker and compose are available (${COMPOSE_CMD}).${NC}"
+}
+
+build_image_if_missing() {
+  local image="$1"
+  local dockerfile="$2"
+  if docker image inspect "$image" >/dev/null 2>&1; then
+    echo "Runtime image already exists: $image"
+    return
+  fi
+  echo "Building runtime image: $image"
+  docker build --ssh default -t "$image" -f "$dockerfile" "$LIB_ROOT"
+}
+
+build_runtime_images() {
+  if [ "${BUILD_RUNTIME_IMAGES:-1}" = "0" ]; then
+    echo -e "${YELLOW}Skipping runtime image build because BUILD_RUNTIME_IMAGES=0.${NC}"
+    return
+  fi
+  if [ ! -d "$LIB_ROOT/nano-agent" ]; then
+    echo -e "${YELLOW}Warning: ${LIB_ROOT}/nano-agent was not found.${NC}"
+    echo "Runtime images in this repo use the sibling nano-agent checkout via go.mod replace."
+    echo "Skipping runtime image build for now. Clone nano-agent next to nano-cloud or set BUILD_RUNTIME_IMAGES=0 explicitly."
+    return
+  fi
+  echo -e "${BLUE}Ensuring local runtime images exist${NC}"
+  export DOCKER_BUILDKIT=1
+  build_image_if_missing "nano-agent-runtime:local" "$ROOT_DIR/docker/nano-agent-runtime/Dockerfile"
+  build_image_if_missing "nano-cli-runtime:local" "$ROOT_DIR/docker/cli-runtime/Dockerfile"
+  build_image_if_missing "nano-net-policy-runtime:local" "$ROOT_DIR/docker/net-policy-runtime/Dockerfile"
+}
+
+print_next_steps() {
+  local mode="$1"
+  local relay="$2"
+  local base
+  base=$(relay_to_http_base "$relay")
+  if [ -z "$base" ]; then
+    base="http://localhost:8081"
+  fi
+
+  echo ""
+  echo -e "${GREEN}Next steps${NC}"
+  if [ "$mode" = "local" ]; then
+    echo "1. Open Console: ${base}/console"
+    echo "2. Login with Gateway Token: dev-token"
+  else
+    echo "1. Open your Gateway Console: ${base}/console"
+    echo "2. Login with the Gateway Token configured on that server."
+  fi
+  echo "3. Approve the pending worker by short code."
+  echo "4. Create a test run from the Console, or run:"
+  echo "   curl -sS -X POST \"${base}/v1/runs\" \\"
+  echo "     -H \"Authorization: Bearer <gateway-token>\" \\"
+  echo "     -H \"Content-Type: application/json\" \\"
+  echo "     -d '{\"runtime\":\"nano_agent\",\"prompt\":\"hello from nano cloud\"}'"
+  echo "5. Diagnose connectivity if needed:"
+  echo "   ${COMPOSE_CMD} logs -f worker"
+  echo "   worker diagnose -relay \"${relay}\" --verbose"
+}
 
 # Check for .env file
 if [ ! -f .env ]; then
@@ -280,9 +381,10 @@ EOF
   echo "$best"
 }
 
-echo -e "${BLUE}=== Nano Cloud Connection Wizard ===${NC}"
-echo "This script will help you configure your worker to connect to a Nano Cloud Gateway."
+echo -e "${BLUE}=== Nano Cloud Quickstart Wizard ===${NC}"
+echo "This wizard configures Nano Cloud, starts Docker Compose, and prints the next steps."
 echo ""
+run_preflight
 
 # 1. Gateway URL
 CURRENT_RELAY=$(get_var "RELAY_URL")
@@ -310,7 +412,7 @@ export NANO_BASE_URL="$NEW_BASE"
 # API Key
 CURRENT_KEY=$(get_var "NANO_API_KEY")
 # If variable is empty in .env, check shell env
-if [ -z "$CURRENT_KEY" ]; then CURRENT_KEY="${NANO_API_KEY}"; fi
+if [ -z "$CURRENT_KEY" ]; then CURRENT_KEY="${NANO_API_KEY:-}"; fi
 
 # Mask key for display
 MASKED_KEY=""
@@ -390,19 +492,15 @@ fi
 echo ""
 echo -e "${GREEN}Configuration saved to .env${NC}"
 
-COMPOSE_CMD=""
-if command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE_CMD="docker-compose"
-elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-  COMPOSE_CMD="docker compose"
-else
-  echo -e "${RED}Error: neither docker-compose nor docker compose is available in PATH.${NC}"
-  exit 1
+if [ -z "${NANO_API_KEY:-}" ]; then
+  echo -e "${YELLOW}Warning: NANO_API_KEY is empty. Local startup can continue, but real nano_agent runs will fail until you set it.${NC}"
 fi
+
+build_runtime_images
 
 # Detect if local gateway
 IS_LOCAL=0
-if [[ "$NEW_RELAY" == *"localhost"* ]] || [[ "$NEW_RELAY" == *"127.0.0.1"* ]]; then
+if relay_is_local_host "$NEW_RELAY"; then
   IS_LOCAL=1
 fi
 
@@ -420,6 +518,7 @@ if [ "$IS_LOCAL" -eq 1 ]; then
   echo ""
   echo -e "${GREEN}Full stack is running in the background.${NC}"
   echo -e "Use '${COMPOSE_CMD} logs -f' to view logs."
+  print_next_steps "local" "$NEW_RELAY"
 else
   echo -e "${BLUE}Detected remote gateway URL.${NC}"
   echo "Starting Worker Only..."
@@ -428,4 +527,5 @@ else
   echo ""
   echo -e "${GREEN}Worker is running in the background.${NC}"
   echo -e "Use '${COMPOSE_CMD} logs -f worker' to view logs."
+  print_next_steps "remote" "$NEW_RELAY"
 fi

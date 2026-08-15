@@ -1,6 +1,7 @@
 package main //nolint:revive
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -16,6 +17,7 @@ import (
 	"github.com/nano-harness/nano-cloud/pkg/worker"
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v2"
 )
 
 func main() {
@@ -80,6 +82,12 @@ func main() {
 	args := flag.Args()
 	if len(args) > 0 {
 		switch args[0] {
+		case "config":
+			handleConfigSubcommand(cfg, *configPath, args[1:])
+			return
+		case "quickstart":
+			runQuickstart()
+			return
 		case "diagnose":
 			diagnoseWorker(cfg, actualRelayURL, *stateDir, *workspaceRoot, *logRoot, *verbose, *jsonOut)
 			return
@@ -177,9 +185,27 @@ func main() {
 			boot.Labels = ls
 		}
 
-		cfg, err = worker.BootstrapFromRemote(ctx, boot)
+		bootstrapCfg, err := worker.BootstrapFromRemote(ctx, boot)
 		if err != nil {
 			logrus.Fatalf("bootstrap failed: %v", err)
+		}
+
+		if cfg != nil {
+			// Merge bootstrap result (worker ID, token, relay URL) into local config
+			cfg.WorkerID = bootstrapCfg.WorkerID
+			cfg.Token = bootstrapCfg.Token
+			cfg.StateDir = bootstrapCfg.StateDir
+			if actualRelayURL != "" {
+				// An explicit relay was provided for bootstrap; ensure consistency.
+				if cfg.RelayURL != "" && cfg.RelayURL != actualRelayURL {
+					logrus.Fatalf("relay URL mismatch: config specifies %q but -relay/RELAY_URL provided %q", cfg.RelayURL, actualRelayURL)
+				}
+				cfg.RelayURL = bootstrapCfg.RelayURL
+			} else if cfg.RelayURL == "" {
+				cfg.RelayURL = bootstrapCfg.RelayURL
+			}
+		} else {
+			cfg = bootstrapCfg
 		}
 	} else if cfg == nil {
 		logrus.Fatal("missing -config or (-relay + -enroll-token)")
@@ -365,4 +391,342 @@ func troubleshootRun(cfg *worker.Config, relayURL string, stateDir string, works
 	logsWorker(cfg, workspaceRoot, logRoot, runID, false, false)
 	fmt.Println("\n-- Logs Tail (stderr) --")
 	logsWorker(cfg, workspaceRoot, logRoot, runID, true, false)
+}
+
+const defaultWorkerConfigPath = "worker-config.yaml"
+const defaultAgentConfigPath = "agent-config.yaml"
+
+func handleConfigSubcommand(cfg *worker.Config, cfgPath string, args []string) {
+	if len(args) == 0 {
+		printConfigUsage()
+		os.Exit(1)
+	}
+
+	if cfgPath == "" {
+		cfgPath = defaultWorkerConfigPath
+	}
+
+	switch args[0] {
+	case "init":
+		configInit(cfgPath)
+	case "show":
+		configShow(cfg, cfgPath)
+	case "set":
+		if len(args) < 3 {
+			logrus.Fatal("config set requires <key> <value>")
+		}
+		configSet(cfg, cfgPath, args[1], args[2])
+	case "agent-init":
+		agentPath := defaultAgentConfigPath
+		if len(args) >= 2 {
+			agentPath = args[1]
+		}
+		configAgentInit(agentPath)
+	case "agent-show":
+		agentPath := defaultAgentConfigPath
+		if cfg != nil && cfg.AgentConfigPath != "" {
+			agentPath = cfg.AgentConfigPath
+		}
+		if len(args) >= 2 {
+			agentPath = args[1]
+		}
+		configAgentShow(agentPath)
+	case "agent-set":
+		if len(args) < 3 {
+			logrus.Fatal("config agent-set requires <key> <value>")
+		}
+		agentPath := defaultAgentConfigPath
+		if cfg != nil && cfg.AgentConfigPath != "" {
+			agentPath = cfg.AgentConfigPath
+		}
+		configAgentSet(agentPath, args[1], args[2])
+	default:
+		logrus.Fatalf("unknown config subcommand: %s", args[0])
+	}
+}
+
+func printConfigUsage() {
+	fmt.Println("Usage: worker config <subcommand> [args]")
+	fmt.Println()
+	fmt.Println("Subcommands:")
+	fmt.Println("  init                   Create default worker config file")
+	fmt.Println("  show                   Show current worker config")
+	fmt.Println("  set <key> <value>      Set a worker config field")
+	fmt.Println("  agent-init [path]      Create default agent config file")
+	fmt.Println("  agent-show [path]      Show current agent config")
+	fmt.Println("  agent-set <key> <val>  Set agent config field (dot-notation key)")
+	fmt.Println()
+	fmt.Println("Tip: Use 'worker quickstart' for an interactive setup wizard.")
+	fmt.Println()
+	fmt.Println("Supported keys for 'set':")
+	fmt.Println("  relay_url, name, version, workspace_root, labels, log_root,")
+	fmt.Println("  agent_config_path, env_passthrough, host_workspace_root,")
+	fmt.Println("  host_state_root, network_policy_image")
+}
+
+func configInit(cfgPath string) {
+	if _, err := os.Stat(cfgPath); err == nil {
+		logrus.Fatalf("config file already exists: %s", cfgPath)
+	}
+	cfg := worker.DefaultConfig()
+	if err := worker.SaveConfig(cfgPath, cfg); err != nil {
+		logrus.Fatalf("failed to save config: %v", err)
+	}
+	fmt.Printf("Worker config created: %s\n", cfgPath)
+}
+
+func configShow(cfg *worker.Config, cfgPath string) {
+	if cfg == nil {
+		b, err := os.ReadFile(cfgPath)
+		if err != nil {
+			logrus.Fatalf("cannot read config file %s: %v", cfgPath, err)
+		}
+		fmt.Print(string(b))
+		return
+	}
+	b, err := yaml.Marshal(cfg)
+	if err != nil {
+		logrus.Fatalf("failed to marshal config: %v", err)
+	}
+	fmt.Print(string(b))
+}
+
+func configSet(cfg *worker.Config, cfgPath string, key, value string) {
+	if cfg == nil {
+		var err error
+		cfg, err = worker.LoadConfig(cfgPath)
+		if err != nil {
+			logrus.Fatalf("cannot load config file %s: %v", cfgPath, err)
+		}
+	}
+	if err := worker.ConfigSet(cfg, key, value); err != nil {
+		logrus.Fatalf("config set failed: %v", err)
+	}
+	if err := worker.SaveConfig(cfgPath, cfg); err != nil {
+		logrus.Fatalf("failed to save config: %v", err)
+	}
+	fmt.Printf("Set %s = %s in %s\n", key, value, cfgPath)
+}
+
+func configAgentInit(agentPath string) {
+	if _, err := os.Stat(agentPath); err == nil {
+		logrus.Fatalf("agent config file already exists: %s", agentPath)
+	}
+	content := worker.DefaultAgentConfigYAML()
+	if err := os.WriteFile(agentPath, []byte(content), 0o600); err != nil {
+		logrus.Fatalf("failed to save agent config: %v", err)
+	}
+	fmt.Printf("Agent config created: %s\n", agentPath)
+}
+
+func configAgentShow(agentPath string) {
+	b, err := os.ReadFile(agentPath)
+	if err != nil {
+		logrus.Fatalf("cannot read agent config file %s: %v", agentPath, err)
+	}
+	fmt.Print(string(b))
+}
+
+func configAgentSet(agentPath, key, value string) {
+	b, err := os.ReadFile(agentPath)
+	if err != nil {
+		logrus.Fatalf("cannot read agent config file %s: %v", agentPath, err)
+	}
+
+	var data yaml.MapSlice
+	if err := yaml.Unmarshal(b, &data); err != nil {
+		logrus.Fatalf("failed to parse agent config: %v", err)
+	}
+
+	parts := strings.Split(key, ".")
+	data = setNestedYAML(data, parts, value)
+
+	out, err := yaml.Marshal(data)
+	if err != nil {
+		logrus.Fatalf("failed to marshal agent config: %v", err)
+	}
+	if err := os.WriteFile(agentPath, out, 0o600); err != nil {
+		logrus.Fatalf("failed to save agent config: %v", err)
+	}
+	fmt.Printf("Set %s = %s in %s\n", key, value, agentPath)
+}
+
+func setNestedYAML(data yaml.MapSlice, keys []string, value string) yaml.MapSlice {
+	if len(keys) == 0 {
+		return data
+	}
+	key := keys[0]
+	for i, item := range data {
+		if fmt.Sprintf("%v", item.Key) == key {
+			if len(keys) == 1 {
+				data[i].Value = value
+				return data
+			}
+			child, ok := item.Value.(yaml.MapSlice)
+			if !ok {
+				child = yaml.MapSlice{}
+			}
+			data[i].Value = setNestedYAML(child, keys[1:], value)
+			return data
+		}
+	}
+	// Key not found, create it
+	if len(keys) == 1 {
+		data = append(data, yaml.MapItem{Key: key, Value: value})
+	} else {
+		child := setNestedYAML(yaml.MapSlice{}, keys[1:], value)
+		data = append(data, yaml.MapItem{Key: key, Value: child})
+	}
+	return data
+}
+
+func runQuickstart() {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Println()
+	fmt.Println("🚀 Nano Worker Quick Setup")
+	fmt.Println("─────────────────────────────")
+	fmt.Println()
+
+	// Step 1: Choose Agent
+	fmt.Println("Which agent do you want to configure?")
+	fmt.Println("  [1] nano-agent")
+	fmt.Println("  [2] cli-agent (opencode/claude-code)")
+	fmt.Println()
+	agentChoice := promptInput(reader, "Agent", "1")
+	isNanoAgent := agentChoice != "2"
+	fmt.Printf("  → %s\n\n", map[bool]string{true: "nano-agent", false: "cli-agent"}[isNanoAgent])
+
+	// Step 2: Choose provider
+	providers := worker.Providers()
+	fmt.Println("Which LLM provider do you want to use?")
+	for i, p := range providers {
+		fmt.Printf("  [%d] %s\n", i+1, p.Name)
+	}
+	fmt.Println()
+
+	choice := promptInput(reader, "Provider", "1")
+	idx := 0
+	if n := parseChoice(choice, len(providers)); n >= 0 {
+		idx = n
+	}
+	preset := providers[idx]
+	if isNanoAgent {
+		preset = worker.WithNanoAgent(preset)
+	}
+	fmt.Printf("  → %s\n\n", preset.Name)
+
+	// Step 2: API Key (if needed)
+	apiKey := ""
+	if preset.NeedsAPIKey {
+		envVal := os.Getenv(preset.EnvKey)
+		hint := ""
+		if envVal != "" {
+			hint = maskKey(envVal)
+		}
+		apiKey = promptInput(reader, fmt.Sprintf("API Key (%s)", preset.EnvKey), hint)
+		if apiKey == "" || apiKey == hint {
+			apiKey = envVal
+		}
+	}
+
+	// Step 3: Model
+	model := promptInput(reader, "Model", preset.Model)
+
+	// Step 4: Base URL (for custom/ollama)
+	baseURL := ""
+	if preset.Name == "Custom (OpenAI-compatible)" {
+		for {
+			baseURL = promptInput(reader, "Base URL", preset.DefaultURL)
+			if strings.TrimSpace(baseURL) != "" {
+				break
+			}
+			fmt.Println("Base URL is required for the selected provider (e.g. https://api.example.com/v1).")
+		}
+	} else if preset.Name == "Ollama (local)" {
+		baseURL = promptInput(reader, "Base URL", preset.DefaultURL)
+	}
+
+	// Step 5: Gateway URL
+	relayURL := promptInput(reader, "Gateway URL", "ws://localhost:8081")
+
+	fmt.Println()
+
+	// Build configs
+	result, err := worker.BuildQuickstart(preset, apiKey, model, baseURL, relayURL)
+	if err != nil {
+		logrus.Fatalf("quickstart failed: %v", err)
+	}
+
+	// Write worker config
+	workerPath := defaultWorkerConfigPath
+	if _, err := os.Stat(workerPath); err == nil {
+		overwrite := promptInput(reader, fmt.Sprintf("%s already exists. Overwrite? (y/N)", workerPath), "N")
+		if !strings.HasPrefix(strings.ToLower(overwrite), "y") {
+			fmt.Println("Aborted.")
+			return
+		}
+	}
+	if err := worker.SaveConfig(workerPath, result.WorkerConfig); err != nil {
+		logrus.Fatalf("failed to save worker config: %v", err)
+	}
+	fmt.Printf("✅ Created %s\n", workerPath)
+
+	// Write agent config
+	agentPath := defaultAgentConfigPath
+	if _, err := os.Stat(agentPath); err == nil {
+		overwrite := promptInput(reader, fmt.Sprintf("%s already exists. Overwrite? (y/N)", agentPath), "N")
+		if !strings.HasPrefix(strings.ToLower(overwrite), "y") {
+			fmt.Printf("   Skipped %s (kept existing)\n", agentPath)
+			fmt.Println()
+			fmt.Printf("✅ Ready! Start with: worker -config %s\n", workerPath)
+			return
+		}
+	}
+	if err := os.WriteFile(agentPath, []byte(result.AgentConfigStr), 0o600); err != nil {
+		logrus.Fatalf("failed to save agent config: %v", err)
+	}
+	fmt.Printf("✅ Created %s\n", agentPath)
+
+	fmt.Println()
+	fmt.Printf("✅ Ready! Start with: worker -config %s\n", workerPath)
+}
+
+func promptInput(reader *bufio.Reader, label, defaultVal string) string {
+	if defaultVal != "" {
+		fmt.Printf("%s [%s]: ", label, defaultVal)
+	} else {
+		fmt.Printf("%s: ", label)
+	}
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return defaultVal
+	}
+	return line
+}
+
+func maskKey(key string) string {
+	if len(key) <= 8 {
+		return strings.Repeat("*", len(key))
+	}
+	return key[:4] + strings.Repeat("*", len(key)-8) + key[len(key)-4:]
+}
+
+func parseChoice(s string, maxVal int) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n < 1 || n > maxVal {
+		return 0
+	}
+	return n - 1
 }

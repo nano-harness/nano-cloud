@@ -1,4 +1,31 @@
-.PHONY: lint lint-check fmt test e2e e2e-local
+.PHONY: lint lint-check fmt test e2e e2e-local build clean quickstart stop logs reset runtime-images
+
+build:
+	go build -o bin/gateway ./cmd/gateway
+	go build -o bin/net-policy-proxy ./cmd/net-policy-proxy
+	go build -o bin/runtime-cli ./cmd/runtime-cli
+	go build -o bin/runtime-cli-wrapper ./cmd/runtime-cli-wrapper
+	go build -o bin/runtime-nano-agent ./cmd/runtime-nano-agent
+	go build -o bin/worker ./cmd/worker
+
+clean:
+	rm -rf bin/
+
+quickstart:
+	./scripts/connect.sh
+
+stop:
+	docker compose down
+
+logs:
+	docker compose logs -f
+
+reset:
+	docker compose down -v --remove-orphans
+	rm -rf .workdir
+
+runtime-images:
+	BUILD_RUNTIME_IMAGES=1 ./scripts/connect.sh
 
 lint:
 	golangci-lint run --fix

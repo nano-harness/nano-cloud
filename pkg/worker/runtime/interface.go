@@ -33,6 +33,7 @@ type ContextInfo struct {
 	StreamID          string
 	WorkspaceDir      string
 	HostWorkspacePath string // Path on the Docker host (for sibling containers)
+	AgentConfigPath   string // Absolute path on the host to the agent config file
+	AgentConfigDest   string // Target path inside container for the agent config file
 	WorkerID          string
-	AgentConfigPath   string // Path to the agent config file on host
 }

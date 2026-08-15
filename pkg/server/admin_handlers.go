@@ -48,13 +48,11 @@ func (s *GatewayServer) handleAdminListWorkers(w http.ResponseWriter, r *http.Re
 	out := make([]map[string]any, 0, len(list))
 	for _, rec := range list {
 		out = append(out, map[string]any{
-			"worker_id":              rec.WorkerID,
-			"labels":                 rec.Labels,
-			"config_version":         rec.ConfigVersion,
-			"applied_config_version": rec.AppliedConfigVersion,
-			"created_at_unix":        rec.CreatedAtUnix,
-			"updated_at_unix":        rec.UpdatedAtUnix,
-			"online":                 connectedWorkers[rec.WorkerID],
+			"worker_id":       rec.WorkerID,
+			"labels":          rec.Labels,
+			"created_at_unix": rec.CreatedAtUnix,
+			"updated_at_unix": rec.UpdatedAtUnix,
+			"online":          connectedWorkers[rec.WorkerID],
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -81,68 +79,6 @@ func (s *GatewayServer) handleAdminDeleteWorker(w http.ResponseWriter, r *http.R
 	_ = json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
 }
 
-func (s *GatewayServer) handleAdminGetWorkerConfig(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	workerID := mux.Vars(r)["id"]
-	rec, err := s.configStore.GetWorker(workerID)
-	if err != nil {
-		switch {
-		case errors.Is(err, errNotFound):
-			http.Error(w, "Not Found", http.StatusNotFound)
-		case errors.Is(err, errInvalid):
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-		default:
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		}
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"worker_id":              rec.WorkerID,
-		"worker_config_yaml":     rec.WorkerConfigYAML,
-		"agent_config_yaml":      rec.AgentConfigYAML,
-		"config_version":         rec.ConfigVersion,
-		"applied_config_version": rec.AppliedConfigVersion,
-	})
-}
-
-type adminPutWorkerConfigRequest struct {
-	WorkerConfigYAML *string `json:"worker_config_yaml"`
-	AgentConfigYAML  *string `json:"agent_config_yaml"`
-}
-
-func (s *GatewayServer) handleAdminPutWorkerConfig(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	workerID := mux.Vars(r)["id"]
-	var req adminPutWorkerConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
-	}
-	rec, err := s.configStore.UpdateWorkerConfig(workerID, req.WorkerConfigYAML, req.AgentConfigYAML)
-	if err != nil {
-		switch {
-		case errors.Is(err, errNotFound):
-			http.Error(w, "Not Found", http.StatusNotFound)
-		case errors.Is(err, errInvalid):
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-		default:
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		}
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"worker_id":              rec.WorkerID,
-		"config_version":         rec.ConfigVersion,
-		"applied_config_version": rec.AppliedConfigVersion,
-	})
-}
-
 func (s *GatewayServer) handleAdminRotateWorkerToken(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
@@ -162,8 +98,7 @@ func (s *GatewayServer) handleAdminRotateWorkerToken(w http.ResponseWriter, r *h
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"worker_id":      rec.WorkerID,
-		"worker_token":   newToken,
-		"config_version": rec.ConfigVersion,
+		"worker_id":    rec.WorkerID,
+		"worker_token": newToken,
 	})
 }

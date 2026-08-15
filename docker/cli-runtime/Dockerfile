@@ -4,9 +4,10 @@ ENV GOPROXY=${GOPROXY}
 
 WORKDIR /src/nano-cloud
 COPY nano-cloud/go.mod nano-cloud/go.sum ./
-COPY nano-agent /src/nano-agent
-COPY nano-cloud/docker/common/setup-go-mod.sh /tmp/setup-go-mod.sh
-RUN chmod +x /tmp/setup-go-mod.sh && /tmp/setup-go-mod.sh
+RUN apk add --no-cache git openssh-client && \
+    git config --global url."ssh://git@github.com/".insteadOf "https://github.com/"
+RUN --mount=type=ssh go mod download
+
 COPY nano-cloud ./
 RUN CGO_ENABLED=0 go build -o /out/runtime-cli ./cmd/runtime-cli
 RUN CGO_ENABLED=0 go build -o /out/runtime-cli-wrapper ./cmd/runtime-cli-wrapper

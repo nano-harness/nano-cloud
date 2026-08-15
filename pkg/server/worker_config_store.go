@@ -14,9 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/nano-harness/nano-cloud/pkg/worker"
-	"gopkg.in/yaml.v2"
 )
 
 var (
@@ -32,17 +29,13 @@ type WorkerConfigStore struct {
 	mu  sync.Mutex
 }
 
-// WorkerRecord represents a worker configuration record
+// WorkerRecord represents a worker registration record
 type WorkerRecord struct {
-	WorkerID             string   `json:"worker_id"`
-	WorkerTokenHash      string   `json:"worker_token_hash"`
-	Labels               []string `json:"labels,omitempty"`
-	ConfigVersion        string   `json:"config_version,omitempty"`
-	WorkerConfigYAML     string   `json:"worker_config_yaml,omitempty"`
-	AgentConfigYAML      string   `json:"agent_config_yaml,omitempty"`
-	AppliedConfigVersion string   `json:"applied_config_version,omitempty"`
-	CreatedAtUnix        int64    `json:"created_at_unix,omitempty"`
-	UpdatedAtUnix        int64    `json:"updated_at_unix,omitempty"`
+	WorkerID        string   `json:"worker_id"`
+	WorkerTokenHash string   `json:"worker_token_hash"`
+	Labels          []string `json:"labels,omitempty"`
+	CreatedAtUnix   int64    `json:"created_at_unix,omitempty"`
+	UpdatedAtUnix   int64    `json:"updated_at_unix,omitempty"`
 }
 
 type workerIndexFile struct {
@@ -62,22 +55,8 @@ func NewWorkerConfigStore(dir string) (*WorkerConfigStore, error) {
 	return s, nil
 }
 
-const defaultAgentConfigYAML = `cli:
-  claude_code:
-    env:
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-    args: ["--model", "claude-3-7-sonnet"]
-  opencode:
-    env:
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
-    args: ["--model", "gpt-4o-mini"]
-`
-
 func (s *WorkerConfigStore) ensureLayout() error {
 	if err := os.MkdirAll(filepath.Join(s.dir, "workers"), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(s.dir, "defaults"), 0o755); err != nil {
 		return err
 	}
 	if err := s.ensureJSONFile(filepath.Join(s.dir, "pairing_requests.json"), pairingRequestsFile{Requests: []PairingRequest{}}); err != nil {
@@ -85,45 +64,6 @@ func (s *WorkerConfigStore) ensureLayout() error {
 	}
 	if err := s.ensureJSONFile(filepath.Join(s.dir, "worker_index.json"), workerIndexFile{TokenHashToWorkerID: map[string]string{}}); err != nil {
 		return err
-	}
-
-	// Initialize default templates if they don't exist
-	workerTplPath := filepath.Join(s.dir, "defaults", "worker.yaml")
-	if _, err := os.Stat(workerTplPath); os.IsNotExist(err) {
-		defaultCfg := worker.Config{
-			RelayURL:       "",
-			Token:          "",
-			WorkerID:       "",
-			Name:           "nano-worker",
-			Version:        "2.0",
-			Labels:         []string{},
-			WorkspaceRoot:  "",
-			EnvPassthrough: []string{"NANO_API_KEY", "NANO_BASE_URL", "NANO_MODEL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"},
-			Runtimes: map[string]worker.RuntimeConfig{
-				"nano_agent": {
-					Image: "nano-agent-runtime:local",
-				},
-				"claude_code": {
-					Image: "nano-cli-runtime:local",
-					Env:   map[string]string{"RUNTIME_BIN": "claude"},
-				},
-				"opencode": {
-					Image: "nano-cli-runtime:local",
-					Env:   map[string]string{"RUNTIME_BIN": "opencode"},
-				},
-				"custom": {
-					Image: "nano-cli-runtime:local",
-					Env:   map[string]string{"RUNTIME_BIN": "/bin/echo"},
-				},
-			},
-		}
-		b, _ := yaml.Marshal(&defaultCfg)
-		_ = os.WriteFile(workerTplPath, b, 0o644)
-	}
-
-	agentTplPath := filepath.Join(s.dir, "defaults", "agent.yaml")
-	if _, err := os.Stat(agentTplPath); os.IsNotExist(err) {
-		_ = os.WriteFile(agentTplPath, []byte(defaultAgentConfigYAML), 0o644)
 	}
 
 	// Cleanup old enroll_tokens.json if exists
@@ -162,9 +102,7 @@ func (s *WorkerConfigStore) ListWorkers() ([]WorkerRecord, error) {
 		if err := readJSON(filepath.Join(s.dir, "workers", name), &rec); err != nil {
 			continue
 		}
-		if _, err := s.ensureWorkerConfigLocked(&rec); err == nil {
-			out = append(out, rec)
-		}
+		out = append(out, rec)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].UpdatedAtUnix != out[j].UpdatedAtUnix {
@@ -173,74 +111,6 @@ func (s *WorkerConfigStore) ListWorkers() ([]WorkerRecord, error) {
 		return out[i].WorkerID < out[j].WorkerID
 	})
 	return out, nil
-}
-
-// GetWorker returns a worker by ID
-func (s *WorkerConfigStore) GetWorker(workerID string) (*WorkerRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if workerID == "" {
-		return nil, errInvalid
-	}
-	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
-	var rec WorkerRecord
-	if err := readJSON(workerPath, &rec); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, errNotFound
-		}
-		return nil, err
-	}
-	if _, err := s.ensureWorkerConfigLocked(&rec); err != nil {
-		return nil, err
-	}
-	return &rec, nil
-}
-
-// UpdateWorkerConfig updates a worker's configuration
-func (s *WorkerConfigStore) UpdateWorkerConfig(workerID string, workerConfigYAML *string, agentConfigYAML *string) (*WorkerRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if workerID == "" {
-		return nil, errInvalid
-	}
-	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
-	var rec WorkerRecord
-	if err := readJSON(workerPath, &rec); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, errNotFound
-		}
-		return nil, err
-	}
-	changed := false
-
-	if workerConfigYAML != nil {
-		var cfg worker.Config
-		if err := yaml.Unmarshal([]byte(*workerConfigYAML), &cfg); err != nil {
-			return nil, errInvalid
-		}
-		if cfg.WorkerID != "" && cfg.WorkerID != workerID {
-			return nil, errInvalid
-		}
-		rec.WorkerConfigYAML = *workerConfigYAML
-		changed = true
-	}
-	if agentConfigYAML != nil {
-		rec.AgentConfigYAML = *agentConfigYAML
-		changed = true
-	}
-
-	if changed {
-		rec.UpdatedAtUnix = time.Now().Unix()
-		if _, err := s.ensureWorkerConfigLocked(&rec); err != nil {
-			return nil, err
-		}
-		if err := writeJSONAtomic(workerPath, &rec); err != nil {
-			return nil, err
-		}
-	}
-	return &rec, nil
 }
 
 // RotateWorkerToken rotates a worker's token
@@ -288,82 +158,36 @@ func (s *WorkerConfigStore) RotateWorkerToken(workerID string) (string, *WorkerR
 	return newToken, &rec, nil
 }
 
-// GetConfigByWorkerToken returns a worker's config by token
-func (s *WorkerConfigStore) GetConfigByWorkerToken(workerToken string) (*WorkerRecord, error) {
+// ValidateWorkerToken validates a worker token and returns the worker ID
+func (s *WorkerConfigStore) ValidateWorkerToken(workerToken string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if workerToken == "" {
-		return nil, errUnauthorized
+		return "", errUnauthorized
 	}
 	tokenHash := hashToken(workerToken)
 
 	var index workerIndexFile
 	if err := readJSON(filepath.Join(s.dir, "worker_index.json"), &index); err != nil {
-		return nil, err
+		return "", err
 	}
 	workerID := index.TokenHashToWorkerID[tokenHash]
 	if workerID == "" {
-		return nil, errUnauthorized
+		return "", errUnauthorized
 	}
 	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
 	var rec WorkerRecord
 	if err := readJSON(workerPath, &rec); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, errUnauthorized
+			return "", errUnauthorized
 		}
-		return nil, err
+		return "", err
 	}
 	if rec.WorkerTokenHash != tokenHash {
-		return nil, errUnauthorized
+		return "", errUnauthorized
 	}
-
-	changed, err := s.ensureWorkerConfigLocked(&rec)
-	if err != nil {
-		return nil, err
-	}
-	if changed {
-		_ = writeJSONAtomic(workerPath, &rec)
-	}
-	return &rec, nil
-}
-
-// AckAppliedConfig acknowledges that a config version has been applied
-func (s *WorkerConfigStore) AckAppliedConfig(workerToken string, appliedVersion string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if workerToken == "" {
-		return errUnauthorized
-	}
-	tokenHash := hashToken(workerToken)
-
-	var index workerIndexFile
-	if err := readJSON(filepath.Join(s.dir, "worker_index.json"), &index); err != nil {
-		return err
-	}
-	workerID := index.TokenHashToWorkerID[tokenHash]
-	if workerID == "" {
-		return errUnauthorized
-	}
-	workerPath := filepath.Join(s.dir, "workers", workerID+".json")
-	var rec WorkerRecord
-	if err := readJSON(workerPath, &rec); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return errUnauthorized
-		}
-		return err
-	}
-	if rec.WorkerTokenHash != tokenHash {
-		return errUnauthorized
-	}
-
-	if appliedVersion == "" {
-		appliedVersion = rec.ConfigVersion
-	}
-	rec.AppliedConfigVersion = appliedVersion
-	rec.UpdatedAtUnix = time.Now().Unix()
-	return writeJSONAtomic(workerPath, &rec)
+	return rec.WorkerID, nil
 }
 
 // DeleteWorker deletes a worker by ID
@@ -396,89 +220,6 @@ func (s *WorkerConfigStore) DeleteWorker(workerID string) error {
 	}
 
 	return os.Remove(workerPath)
-}
-
-func (s *WorkerConfigStore) ensureWorkerConfigLocked(rec *WorkerRecord) (bool, error) {
-	now := time.Now().Unix()
-	changed := false
-	if rec.WorkerConfigYAML == "" {
-		workerTplPath := filepath.Join(s.dir, "defaults", "worker.yaml")
-		b, err := os.ReadFile(workerTplPath)
-		if err == nil {
-			var cfg worker.Config
-			if yaml.Unmarshal(b, &cfg) == nil {
-				cfg.WorkerID = rec.WorkerID
-				if len(rec.Labels) > 0 {
-					cfg.Labels = rec.Labels
-				}
-				if out, err := yaml.Marshal(&cfg); err == nil {
-					rec.WorkerConfigYAML = string(out)
-				}
-			}
-		}
-		// Fallback if file read/parse failed
-		if rec.WorkerConfigYAML == "" {
-			defaultCfg := worker.Config{
-				RelayURL:       "",
-				Token:          "",
-				WorkerID:       rec.WorkerID,
-				Name:           "nano-worker",
-				Version:        "2.0",
-				Labels:         rec.Labels,
-				WorkspaceRoot:  "",
-				EnvPassthrough: []string{"NANO_API_KEY", "NANO_BASE_URL", "NANO_MODEL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"},
-				Runtimes: map[string]worker.RuntimeConfig{
-					"nano_agent": {
-						Image: "nano-agent-runtime:local",
-					},
-					"claude_code": {
-						Image: "nano-cli-runtime:local",
-						Env:   map[string]string{"RUNTIME_BIN": "claude"},
-					},
-					"opencode": {
-						Image: "nano-cli-runtime:local",
-						Env:   map[string]string{"RUNTIME_BIN": "opencode"},
-					},
-					"custom": {
-						Image: "nano-cli-runtime:local",
-						Env:   map[string]string{"RUNTIME_BIN": "/bin/echo"},
-					},
-				},
-			}
-			b, _ := yaml.Marshal(&defaultCfg)
-			rec.WorkerConfigYAML = string(b)
-		}
-		rec.UpdatedAtUnix = now
-		changed = true
-	}
-
-	if rec.AgentConfigYAML == "" {
-		agentTplPath := filepath.Join(s.dir, "defaults", "agent.yaml")
-		b, err := os.ReadFile(agentTplPath)
-		if err == nil && len(b) > 0 {
-			rec.AgentConfigYAML = string(b)
-		} else {
-			rec.AgentConfigYAML = defaultAgentConfigYAML
-		}
-		rec.UpdatedAtUnix = now
-		changed = true
-	}
-
-	version := computeConfigVersion(rec.WorkerConfigYAML, rec.AgentConfigYAML)
-	if rec.ConfigVersion != version {
-		rec.ConfigVersion = version
-		rec.UpdatedAtUnix = now
-		changed = true
-	}
-	return changed, nil
-}
-
-func computeConfigVersion(workerConfigYAML, agentConfigYAML string) string {
-	h := sha256.New()
-	_, _ = h.Write([]byte(workerConfigYAML))
-	_, _ = h.Write([]byte("\n---\n"))
-	_, _ = h.Write([]byte(agentConfigYAML))
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 func hashToken(token string) string {

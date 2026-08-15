@@ -1,10 +1,7 @@
 package worker
 
 import (
-	"path/filepath"
 	"testing"
-
-	"gopkg.in/yaml.v2"
 )
 
 func TestHTTPBaseURLFromRelayURL(t *testing.T) {
@@ -65,88 +62,43 @@ func TestHTTPBaseURLFromRelayURLInvalid(t *testing.T) {
 	}
 }
 
-// TestParseAndMergeWorkerConfigRelayURLPort verifies that the user-configured
-// relay URL port (from boot.RelayURL / -relay flag) is preserved when the
-// server-side worker config provides a relay_url without an explicit port.
-// This is the root cause of the 502 bug: a portless server relay_url used to
-// silently override boot.RelayURL, causing dial() to connect on port 80/443
-// instead of the intended gateway port.
-func TestParseAndMergeWorkerConfigRelayURLPort(t *testing.T) {
+// TestBuildConfigFromBootstrap verifies that buildConfigFromBootstrap
+// correctly assembles a Config from bootstrap parameters and pairing state.
+func TestBuildConfigFromBootstrap(t *testing.T) {
 	st := bootstrapState{
-		WorkerID:    "test-worker",
+		WorkerID:    "test-worker-id",
 		WorkerToken: "test-token",
 	}
-
-	cases := []struct {
-		name         string
-		bootRelayURL string
-		serverRelay  string // relay_url field in the server-side YAML
-		wantRelayURL string
-	}{
-		{
-			name:         "server relay_url empty: use boot.RelayURL",
-			bootRelayURL: "ws://gateway.example.com:9999",
-			serverRelay:  "",
-			wantRelayURL: "ws://gateway.example.com:9999",
-		},
-		{
-			name:         "server relay_url has no port: prefer boot.RelayURL to preserve configured port",
-			bootRelayURL: "ws://gateway.example.com:9999",
-			serverRelay:  "ws://gateway.example.com",
-			wantRelayURL: "ws://gateway.example.com:9999",
-		},
-		{
-			name:         "server relay_url has explicit port: admin override wins",
-			bootRelayURL: "ws://gateway.example.com:9999",
-			serverRelay:  "ws://gateway.example.com:7777",
-			wantRelayURL: "ws://gateway.example.com:7777",
-		},
-		{
-			name:         "server relay_url has different host and port: admin override wins",
-			bootRelayURL: "ws://old-gateway.example.com:9999",
-			serverRelay:  "ws://new-gateway.example.com:8081",
-			wantRelayURL: "ws://new-gateway.example.com:8081",
-		},
-		{
-			name:         "wss server relay_url has no port: prefer boot.RelayURL",
-			bootRelayURL: "wss://gateway.example.com:443",
-			serverRelay:  "wss://gateway.example.com",
-			wantRelayURL: "wss://gateway.example.com:443",
-		},
+	boot := BootstrapConfig{
+		RelayURL:          "ws://gateway.example.com:9999",
+		WorkspaceRoot:     "/tmp/workspaces",
+		HostWorkspaceRoot: "/host/workspaces",
+		HostStateRoot:     "/host/state",
+		StateDir:          "/tmp/state",
+		LogRoot:           "/tmp/logs",
+		Labels:            []string{"gpu", "fast"},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			stateDir := t.TempDir()
-			// agentCfgPath points to a non-existent file inside the temp dir;
-			// parseAndMergeWorkerConfig silently skips it when the file is absent.
-			agentCfgPath := filepath.Join(stateDir, "agent-config.yaml")
-
-			// Build a minimal worker config YAML with the given relay_url.
-			serverCfg := Config{
-				RelayURL: tc.serverRelay,
-				WorkerID: "test-worker",
-				Name:     "test",
-				Version:  "1.0",
-			}
-			yamlBytes, err := yaml.Marshal(&serverCfg)
-			if err != nil {
-				t.Fatalf("yaml.Marshal: %v", err)
-			}
-
-			boot := BootstrapConfig{
-				RelayURL: tc.bootRelayURL,
-				StateDir: stateDir,
-				WorkerID: "test-worker",
-			}
-
-			got, err := parseAndMergeWorkerConfig(string(yamlBytes), st, boot, agentCfgPath)
-			if err != nil {
-				t.Fatalf("parseAndMergeWorkerConfig: %v", err)
-			}
-			if got.RelayURL != tc.wantRelayURL {
-				t.Fatalf("RelayURL mismatch: got=%q want=%q", got.RelayURL, tc.wantRelayURL)
-			}
-		})
+	cfg := buildConfigFromBootstrap(st, boot)
+	if cfg.RelayURL != boot.RelayURL {
+		t.Fatalf("RelayURL mismatch: got=%q want=%q", cfg.RelayURL, boot.RelayURL)
+	}
+	if cfg.Token != st.WorkerToken {
+		t.Fatalf("Token mismatch: got=%q want=%q", cfg.Token, st.WorkerToken)
+	}
+	if cfg.WorkerID != st.WorkerID {
+		t.Fatalf("WorkerID mismatch: got=%q want=%q", cfg.WorkerID, st.WorkerID)
+	}
+	if cfg.WorkspaceRoot != boot.WorkspaceRoot {
+		t.Fatalf("WorkspaceRoot mismatch: got=%q want=%q", cfg.WorkspaceRoot, boot.WorkspaceRoot)
+	}
+	if cfg.HostWorkspaceRoot != boot.HostWorkspaceRoot {
+		t.Fatalf("HostWorkspaceRoot mismatch: got=%q want=%q", cfg.HostWorkspaceRoot, boot.HostWorkspaceRoot)
+	}
+	if cfg.LogRoot != boot.LogRoot {
+		t.Fatalf("LogRoot mismatch: got=%q want=%q", cfg.LogRoot, boot.LogRoot)
+	}
+	if len(cfg.Labels) != 2 || cfg.Labels[0] != "gpu" || cfg.Labels[1] != "fast" {
+		t.Fatalf("Labels mismatch: got=%v", cfg.Labels)
 	}
 }

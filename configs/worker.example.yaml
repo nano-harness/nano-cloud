@@ -40,6 +40,7 @@ runtimes:
   nano_agent:
     image: nano-agent-runtime:local
     env_file: ./nano-agent.env # Load advanced config from file
+    agent_config_dest: /root/.config/nano/config.yaml # Mount target path inside the container
   claude_code:
     image: nano-cli-runtime:local
     env:
