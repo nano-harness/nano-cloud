@@ -2,7 +2,13 @@
 
 [中文](./README.zh-CN.md)
 
-> Part of the [nano series](https://nano-harness.github.io) — minimal implementations of agent loops & harness engineering: [nano-symphony](https://github.com/nano-harness/nano-symphony) · [nano-agent](https://github.com/nano-harness/nano-agent) · [nano-cloud](https://github.com/nano-harness/nano-cloud). Pairs with the [harness-101](https://github.com/albert-lv/harness-101) course.
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://golang.org)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Docker](https://img.shields.io/badge/Docker-24.0+-2496ED?logo=docker)](https://docker.com)
+
+> Distributed agent execution — gateway/worker architecture, Docker isolation, one command to scale your [nano-agent](https://github.com/nano-harness/nano-agent) fleet.
+>
+> Part of the [nano series](https://nano-harness.github.io) — [nano-symphony](https://github.com/nano-harness/nano-symphony) · [nano-agent](https://github.com/nano-harness/nano-agent) · [nano-cloud](https://github.com/nano-harness/nano-cloud). Pairs with the [harness-101](https://github.com/albert-lv/harness-101) course.
 
 Nano Cloud is the Gateway + Worker backend for the **Nano Agent** ecosystem. It lets agents execute tasks remotely in isolated Docker runtimes.
 
