@@ -25,20 +25,21 @@ func main() {
 	}
 
 	policy := strings.ToLower(strings.TrimSpace(os.Getenv("APPROVAL_POLICY")))
-	approvalHandler := func(_ *agent.ToolCallInfo) bool {
+	approvalHandler := func(_ *agent.ToolCallInfo) agent.ApprovalDecision {
 		switch policy {
 		case "auto", "allow", "true", "yes":
-			return true
+			return agent.ApprovalApproveOnce
 		default:
-			return false
+			return agent.ApprovalReject
 		}
 	}
 
-	a, err := agent.New(cfg, approvalHandler)
+	a, err := agent.New(cfg)
 	if err != nil {
 		os.Stderr.WriteString(err.Error() + "\n") //nolint:errcheck
 		os.Exit(1)
 	}
+	a.SetApprovalHandlerV2(approvalHandler)
 
 	timeoutSeconds := int64(300)
 	if v := strings.TrimSpace(os.Getenv("TIMEOUT_SECONDS")); v != "" {

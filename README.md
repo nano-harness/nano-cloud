@@ -26,6 +26,12 @@ graph TD
 - **Worker**: connects to the Gateway and starts isolated Docker runtime containers.
 - **Runtime images**: `nano-agent-runtime`, `nano-cli-runtime`, and optional network-policy runtime used by the Worker.
 
+## Security hardening
+
+> New in this workspace (no CHANGELOG.md in this repo): the Worker config gains an optional `container_runtime` key (e.g. `runsc` for gVisor) that starts agent containers with `docker run --runtime=<value>`.
+
+For untrusted, model-generated code you can run agent containers under gVisor (`runsc`) instead of runc, and restrict egress per run with network policies (`none` / `allowlist` / `all`) enforced by the `net-policy-proxy` sidecar. See [`docs/SECURITY-HARDENING.md`](docs/SECURITY-HARDENING.md) ([中文](docs/SECURITY-HARDENING.zh-CN.md)) for the full matrix, credential guidance, and how it layers with nano-agent's bwrap/sandbox-exec sandbox.
+
 ## 3-minute quick start
 
 Use one entry point for first-time setup:

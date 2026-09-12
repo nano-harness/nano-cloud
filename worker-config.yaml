@@ -42,3 +42,7 @@ runtimes:
       RUNTIME_BIN: opencode
 network_policy_image: ""
 network_allowlist: []
+
+# Optional: OCI runtime for agent containers, e.g. "runsc" (gVisor).
+# Empty = docker default runtime (runc). See docs/SECURITY-HARDENING.md.
+container_runtime: ""

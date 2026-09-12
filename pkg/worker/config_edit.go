@@ -259,7 +259,8 @@ const defaultAgentConfigPath = "agent-config.yaml"
 
 // ConfigSet sets a top-level worker config field by key.
 // Supported keys: relay_url, name, version, workspace_root, labels,
-// log_root, agent_config_path, env_passthrough, host_workspace_root, host_state_root, network_policy_image.
+// log_root, agent_config_path, env_passthrough, host_workspace_root, host_state_root,
+// network_policy_image, container_runtime.
 func ConfigSet(cfg *Config, key string, value string) error { //nolint:revive
 	switch key {
 	case "relay_url":
@@ -300,6 +301,8 @@ func ConfigSet(cfg *Config, key string, value string) error { //nolint:revive
 		cfg.EnvPassthrough = envs
 	case "network_policy_image":
 		cfg.NetworkPolicyImage = value
+	case "container_runtime":
+		cfg.ContainerRuntime = value
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
 	}

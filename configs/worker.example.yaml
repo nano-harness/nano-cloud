@@ -36,6 +36,12 @@ env_passthrough:
 #     protocol: tcp
 #     ports: [443]
 
+# Optional: OCI runtime for agent containers. Empty = docker default (runc).
+# Set to "runsc" (gVisor) for stronger isolation of untrusted, model-generated
+# code. The runtime must be installed and registered with the docker daemon
+# (check the Runtimes section of `docker info`). See docs/SECURITY-HARDENING.md.
+# container_runtime: runsc
+
 runtimes:
   nano_agent:
     image: nano-agent-runtime:local

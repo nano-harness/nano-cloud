@@ -77,6 +77,29 @@ func DockerNetworkConnect(ctx context.Context, network string, container string)
 	return nil
 }
 
+// DockerRuntimeArgs returns the docker CLI flags selecting an alternate OCI
+// runtime (e.g. "runsc" for gVisor). An empty or whitespace-only name selects
+// the docker daemon default (usually runc) and yields no flags. Unknown names
+// are passed through; docker itself reports "unknown or invalid runtime name".
+func DockerRuntimeArgs(containerRuntime string) []string { //nolint:revive
+	rt := strings.TrimSpace(containerRuntime)
+	if rt == "" {
+		return nil
+	}
+	return []string{"--runtime=" + rt}
+}
+
+// ContainerRuntimeErrorHint appends a diagnostic hint to a docker error
+// message when a custom OCI runtime is configured and the error looks
+// runtime-related (e.g. runsc not installed/registered with the daemon).
+func ContainerRuntimeErrorHint(msg string, containerRuntime string) string { //nolint:revive
+	rt := strings.TrimSpace(containerRuntime)
+	if rt == "" || !strings.Contains(strings.ToLower(msg), "runtime") {
+		return msg
+	}
+	return fmt.Sprintf("%s (hint: worker container_runtime=%q is configured; make sure this OCI runtime is installed and registered with docker, e.g. runsc for gVisor — check the Runtimes section of `docker info`)", msg, rt)
+}
+
 func DockerExtraArgsFromPolicy(pol *runtimev1.Policy) []string { //nolint:revive
 	if pol == nil {
 		return nil

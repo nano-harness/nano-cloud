@@ -38,6 +38,7 @@ type Config struct { //nolint:revive
 	EnvPassthrough     []string                 `yaml:"env_passthrough"`
 	AgentConfigPath    string                   `yaml:"agent_config_path"`
 	Runtimes           map[string]RuntimeConfig `yaml:"runtimes"`
+	ContainerRuntime   string                   `yaml:"container_runtime,omitempty"`
 	NetworkPolicyImage string                   `yaml:"network_policy_image"`
 	NetworkAllowlist   []NetworkAllowRule       `yaml:"network_allowlist"`
 }

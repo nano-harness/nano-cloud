@@ -772,6 +772,7 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 		env["no_proxy"] = "localhost,127.0.0.1"
 
 		extraArgs := DockerExtraArgsFromPolicy(pol)
+		extraArgs = append(DockerRuntimeArgs(cfg.ContainerRuntime), extraArgs...)
 		extraArgs = append(extraArgs, "--network", netName)
 
 		proc, err := DockerRun(ctx, DockerRunSpec{
@@ -794,6 +795,7 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 			if err != nil {
 				msg = err.Error()
 			}
+			msg = ContainerRuntimeErrorHint(msg, cfg.ContainerRuntime)
 			_ = DockerRemove(context.Background(), proxyName)
 			_ = DockerNetworkRemove(context.Background(), netName)
 			_ = w.sendError(streamID, "DOCKER_RUN_FAILED", msg, "")
@@ -844,6 +846,7 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 	}
 
 	extraArgs := DockerExtraArgsFromPolicy(pol)
+	extraArgs = append(DockerRuntimeArgs(cfg.ContainerRuntime), extraArgs...)
 
 	proc, err := DockerRun(ctx, DockerRunSpec{
 		Image:     runtimeCfg.Image,
@@ -865,6 +868,7 @@ func (w *Worker) handleRunRequest(parent context.Context, streamID string, req *
 		if err != nil {
 			msg = err.Error()
 		}
+		msg = ContainerRuntimeErrorHint(msg, cfg.ContainerRuntime)
 		_ = w.sendError(streamID, "DOCKER_RUN_FAILED", msg, "")
 		if rs.done.CompareAndSwap(false, true) {
 			_ = w.sendCompleted(streamID, false, 3, "")

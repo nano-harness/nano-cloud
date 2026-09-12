@@ -20,6 +20,12 @@ graph TD
 - **Worker**：连接 Gateway，并启动隔离的 Docker runtime 容器。
 - **Runtime 镜像**：`nano-agent-runtime`、`nano-cli-runtime`，以及 Worker 使用的可选 network-policy runtime。
 
+## 安全加固
+
+> 本工作区新增（本仓库无 CHANGELOG.md，在此简注）：Worker 配置新增可选的 `container_runtime` 键（例如 gVisor 的 `runsc`），agent 容器将以 `docker run --runtime=<值>` 启动。
+
+对于不可信的、模型生成的代码，可以让 agent 容器运行在 gVisor（`runsc`）而非 runc 之上，并按 run 用网络策略（`none` / `allowlist` / `all`，由 `net-policy-proxy` sidecar 强制执行）限制出站。完整策略矩阵、凭据建议以及与 nano-agent bwrap/sandbox-exec 沙箱的分层关系见 [`docs/SECURITY-HARDENING.zh-CN.md`](docs/SECURITY-HARDENING.zh-CN.md)（[English](docs/SECURITY-HARDENING.md)）。
+
 ## 三分钟快速开始
 
 首次配置只需一个入口：
