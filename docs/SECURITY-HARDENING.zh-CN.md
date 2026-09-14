@@ -27,6 +27,31 @@ container_runtime: runsc   # gVisor；留空 = docker 默认（runc）
 
 运行时选择是按 worker 的部署决策，而不是按 run：proto 的 `Policy`（`proto/runtime/v1/runtime.proto`）刻意不包含容器运行时字段，因此提交 run 的客户端无法削弱已加固 worker 的隔离级别。
 
+## 按威胁层级划分的隔离选型矩阵
+
+不存在唯一的"最佳"沙箱；应选择隔离强度与负载威胁层级相匹配的方案：
+
+| 层级 | 技术 | 隔离边界 | 适用场景 | nano-cloud 现状 |
+| --- | --- | --- | --- | --- |
+| 最高强度 | Firecracker microVM（或 Kata） | KVM 虚拟机内的独立 guest 内核；容器逃逸后仍落在一个一次性 VM 里 | 多租户平台、完全不可信的第三方 agent | 未内置；只要在宿主机上注册为 docker 运行时，`container_runtime` 即可直接选用，无需改代码 |
+| 均衡（默认推荐） | gVisor / `runsc` | 用户态内核拦截系统调用，大幅收缩宿主内核攻击面 | 生产环境单租户运行不可信模型输出 | **已支持并推荐**：`container_runtime: runsc` |
+| 开发环境 | Docker + ECI（Docker Desktop Enhanced Container Isolation，基于 Sysbox）或原生 runc | 加固的 userns 容器（ECI）；原生 runc 与宿主共享内核 | 本地开发、可信任务、针对自有代码的 CI | 开箱即用；仅对可信负载可作为基线 |
+| 轻量 | WebAssembly（Wasmtime/WAMR、浏览器沙箱） | 基于 capability 的 VM，默认无任何宿主访问能力 | 嵌入浏览器或边缘插件的 agent | 不在 nano-cloud 的 OCI 流水线范围内；与浏览器侧 nano-agent runtime 相关 |
+
+nano-cloud 部署的威胁层级指引：面向第三方的多租户 gateway → microVM 层；自有集群上生产运行模型生成代码 → `runsc`（默认推荐）；开发者笔记本上迭代可信任务 → Docker/ECI。注意选型矩阵与评测后端定位（`README.zh-CN.md`）中的运维权衡：越强的沙箱文件系统与依赖安装越慢，当成百上千个有时限的基准任务并行执行时这一点尤为关键。
+
+## 来自马具工程实践的两条设计原则
+
+**(a) 提示注入没有完美防御——要限制爆炸半径。** 价值最高的控制手段不是检测注入，而是给"agent 被劫持后能做什么"设上限。域名白名单把"agent 被劫持"降级为"agent 被劫持*且只能访问白名单主机*"。在 nano-cloud 中，这条原则落在两处：由 worker 的 `net-policy-proxy` sidecar 强制执行的按 run 生效的 `NETWORK_POLICY_ALLOWLIST`（见下节），以及仅在 worker 侧可配的 `container_runtime`——被劫持或恶意的*客户端*通过 gateway 提交 run 也无法削弱它。
+
+**(b) 下一类漏洞往往不是打破沙箱，而是"让沙箱写入一个稍后会被沙箱外可信进程消费的东西"。** 宿主侧交接面是新前线，worker 产物的每条消费路径都需要显式审计。在 nano-cloud 架构中，跨越信任边界的交接点有：
+
+- **挂载的工作区**（`pkg/worker/config.go` 中的 `workspace_root` / `host_workspace_root`）：agent 写入 `/workspace` 的文件会留存在 worker 宿主机磁盘上。之后任何读取、解析或执行它们的进程（CI 任务、产物收集器、评测验证器）都在跨越边界。
+- **宿主机上的 run 日志**（`pkg/worker/worker.go` 的 `openLogFiles`）：`agent.stdout.log` / `agent.stderr.log` / `.nano-run.json` 由 worker 根据 agent 输出写入；tail 或工具链必须将其视为不可信文本。
+- **事件流 worker → gateway → console**：agent 可控的文本（assistant delta、状态详情）经 WebSocket 到达 gateway，再经 SSE 到达 Console。Console 在渲染前对事件负载做 HTML 转义（`pkg/server/html_escape.go` 的 `htmlEscape`）——这是一处已有的交接面防御；任何新增的消费者（仪表盘、CLI 渲染器、webhook 转发）都必须同样处理。
+
+审计经验法则：每一条 worker 产物被可信进程消费的路径都应做到**渲染时转义、解析时校验、绝不执行**。新增 run 产物消费者时，请将其补充到上面的清单。
+
 ## 网络策略矩阵
 
 `RunRequest.policy.network`（`enum NetworkPolicy`）到 worker 行为的映射（`DockerExtraArgsFromPolicy` + `handleRunRequest` 的 allowlist 分支）：
@@ -90,3 +115,5 @@ container_runtime: runsc   # gVisor；留空 = docker 默认（runc）
 - [ ] Worker 经配对码入网；`token` 不跨宿主机共享。
 - [ ] 不可信 runtime 不使用 `runner: exec`。
 - [ ] gateway/客户端为每个 run 设置 `Policy.resources`，限制 CPU/内存/pids。
+- [ ] 已按上方选型矩阵选择与威胁层级匹配的隔离级别（多租户 → microVM；生产不可信负载 → `runsc`）。
+- [ ] worker 产物的每个消费者（工作区文件、宿主机日志、事件流）均已按交接面法则审计：渲染时转义、解析时校验、绝不执行。

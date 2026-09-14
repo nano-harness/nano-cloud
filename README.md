@@ -30,7 +30,21 @@ graph TD
 
 > New in this workspace (no CHANGELOG.md in this repo): the Worker config gains an optional `container_runtime` key (e.g. `runsc` for gVisor) that starts agent containers with `docker run --runtime=<value>`.
 
-For untrusted, model-generated code you can run agent containers under gVisor (`runsc`) instead of runc, and restrict egress per run with network policies (`none` / `allowlist` / `all`) enforced by the `net-policy-proxy` sidecar. See [`docs/SECURITY-HARDENING.md`](docs/SECURITY-HARDENING.md) ([中文](docs/SECURITY-HARDENING.zh-CN.md)) for the full matrix, credential guidance, and how it layers with nano-agent's bwrap/sandbox-exec sandbox.
+For untrusted, model-generated code you can run agent containers under gVisor (`runsc`) instead of runc, and restrict egress per run with network policies (`none` / `allowlist` / `all`) enforced by the `net-policy-proxy` sidecar. See [`docs/SECURITY-HARDENING.md`](docs/SECURITY-HARDENING.md) ([中文](docs/SECURITY-HARDENING.zh-CN.md)) for the isolation selection matrix by threat tier, the full network policy matrix, credential guidance, and how it layers with nano-agent's bwrap/sandbox-exec sandbox.
+
+## Positioning: Harbor-style evaluation backend (mid-term)
+
+Nano Cloud's mid-term positioning is the **execution backend for large-scale nano-agent benchmarks**, following the paradigm of [Harbor](https://github.com/laude-institute/harbor) in the Terminal-Bench ecosystem: each benchmark task runs in its own container, and an **independent verifier** — not the agent, not the model — scores the outcome. The object under evaluation is *any complete agent*, not "a model plus a fixed scaffold", so the same harness can benchmark nano-agent releases, third-party agents, and ablations side by side.
+
+This maps onto the existing architecture:
+
+- **Gateway** = experiment scheduler: dispatches tasks and collects run events/verdicts;
+- **Worker fleet** = parallel executors: one containerized task per run, resource-capped via `Policy.resources`;
+- **Verifier** = a separate consumer of task artifacts that runs after the agent finishes — see the handoff-surface principle in [`docs/SECURITY-HARDENING.md`](docs/SECURITY-HARDENING.md) for why its consumption path must be audited.
+
+Target scale: full **SWE-bench 500-task** runs and **pass^k** repeated-trial experiments, which require tens to hundreds of runs executing in parallel across the worker fleet.
+
+A caveat this positioning is designed around: **the evaluation environment itself introduces variance** — different sandbox backends (runc vs `runsc`) install dependencies at different speeds, which shifts timeout-sensitive scores. Serious comparisons require unified hardware, a fixed sandbox backend, and repeated runs; making that reproducibility practical at fleet scale is one of the problems nano-cloud-as-eval-backend exists to solve.
 
 ## 3-minute quick start
 

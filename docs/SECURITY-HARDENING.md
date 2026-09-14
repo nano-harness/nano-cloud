@@ -56,6 +56,66 @@ Runtime selection is a per-worker deployment decision, not per-run: the
 container-runtime field, so a client submitting a run cannot weaken a
 hardened worker's isolation.
 
+## Isolation selection matrix by threat tier
+
+There is no single "best" sandbox; pick the layer whose isolation strength
+matches the threat tier of the workload:
+
+| Tier | Technology | Isolation boundary | Recommended for | nano-cloud status |
+| --- | --- | --- | --- | --- |
+| Highest | Firecracker microVM (or Kata) | Dedicated guest kernel in a KVM VM; a container escape still lands inside a disposable VM | Multi-tenant platforms, fully untrusted third-party agents | Not bundled; if registered as a docker runtime on the host, `container_runtime` selects it with no code change |
+| Balanced (default) | gVisor / `runsc` | Userspace kernel intercepts syscalls; drastically shrinks the host-kernel attack surface | Production single-tenant runs of untrusted model output | **Supported and recommended**: `container_runtime: runsc` |
+| Development | Docker + ECI (Docker Desktop Enhanced Container Isolation, Sysbox-based) or stock runc | Hardened userns container (ECI); plain runc shares the host kernel | Local development, trusted tasks, CI on your own code | Works out of the box; acceptable baseline only for trusted workloads |
+| Lightweight | WebAssembly (Wasmtime/WAMR, browser sandbox) | Capability-based VM with no host access by default | Agents embedded in browsers or edge plugins | Out of scope for nano-cloud's OCI pipeline; relevant to browser-side nano-agent runtimes |
+
+Threat-tier guidance for nano-cloud deployments: multi-tenant gateway
+serving third parties → microVM tier; production runs of model-generated
+code on your own fleet → `runsc` (the default recommendation);
+developer laptops iterating on trusted tasks → Docker/ECI. Note the
+operational trade-off used in the evaluation-backend positioning
+(`README.md`): stronger sandboxes slow down filesystem and
+dependency-install operations, which matters when hundreds of
+time-boxed benchmark runs execute in parallel.
+
+## Two design principles from harness-engineering practice
+
+**(a) There is no perfect defense against prompt injection — limit the
+blast radius.** The highest-value control is not detecting injection but
+capping what a hijacked agent can do. A domain allowlist downgrades
+"agent is hijacked" to "agent is hijacked *and can only reach allowlisted
+hosts*". In nano-cloud this principle is load-bearing in two places: the
+per-run `NETWORK_POLICY_ALLOWLIST` enforced by the worker's
+`net-policy-proxy` sidecar (next section), and the worker-side-only
+`container_runtime` setting, which a hijacked or malicious *client*
+submitting runs through the gateway cannot weaken.
+
+**(b) The next vulnerability class is not breaking out of the sandbox —
+it is making the sandbox write something that a trusted process outside
+will consume later.** The host-side *handoff surface* is the new
+frontier, and every consumption path of worker-produced artifacts needs
+explicit audit. In nano-cloud's architecture the trust boundary crossings
+are:
+
+- **Mounted workspace** (`workspace_root` / `host_workspace_root` in
+  `pkg/worker/config.go`): files the agent writes into `/workspace`
+  persist on the worker host disk. Any later process that reads, parses,
+  or executes them (CI jobs, artifact collectors, an eval verifier)
+  crosses the boundary.
+- **Run logs on the host** (`openLogFiles` in `pkg/worker/worker.go`):
+  `agent.stdout.log` / `agent.stderr.log` / `.nano-run.json` are written
+  by the worker from agent output; tailing or tooling must treat them as
+  untrusted text.
+- **Event stream worker → gateway → console**: agent-controlled text
+  (assistant deltas, status details) travels the WebSocket to the gateway
+  and over SSE to the Console. The Console HTML-escapes event payloads
+  before rendering (`htmlEscape` in `pkg/server/html_escape.go`) — an
+  existing handoff-surface defense; any new consumer (dashboards, CLI
+  renderers, webhook forwards) must do the same.
+
+Audit rule of thumb: every path where worker output is consumed by a
+trusted process should **escape on render, validate on parse, never
+exec**. When adding a new consumer of run artifacts, list it here.
+
 ## Network policy matrix
 
 `RunRequest.policy.network` (`enum NetworkPolicy`) maps to the following
@@ -175,3 +235,8 @@ outside, bwrap + `ask`/`deny` approval inside.
 - [ ] No `runner: exec` for untrusted runtimes.
 - [ ] Resource limits (`Policy.resources`) set by the gateway/client to cap
       CPU/memory/pids per run.
+- [ ] Isolation tier chosen from the selection matrix above matches the
+      threat tier (multi-tenant → microVM; production untrusted → `runsc`).
+- [ ] Every consumer of worker artifacts (workspace files, host logs,
+      event stream) reviewed against the handoff-surface rule: escape on
+      render, validate on parse, never exec.

@@ -24,7 +24,21 @@ graph TD
 
 > 本工作区新增（本仓库无 CHANGELOG.md，在此简注）：Worker 配置新增可选的 `container_runtime` 键（例如 gVisor 的 `runsc`），agent 容器将以 `docker run --runtime=<值>` 启动。
 
-对于不可信的、模型生成的代码，可以让 agent 容器运行在 gVisor（`runsc`）而非 runc 之上，并按 run 用网络策略（`none` / `allowlist` / `all`，由 `net-policy-proxy` sidecar 强制执行）限制出站。完整策略矩阵、凭据建议以及与 nano-agent bwrap/sandbox-exec 沙箱的分层关系见 [`docs/SECURITY-HARDENING.zh-CN.md`](docs/SECURITY-HARDENING.zh-CN.md)（[English](docs/SECURITY-HARDENING.md)）。
+对于不可信的、模型生成的代码，可以让 agent 容器运行在 gVisor（`runsc`）而非 runc 之上，并按 run 用网络策略（`none` / `allowlist` / `all`，由 `net-policy-proxy` sidecar 强制执行）限制出站。按威胁层级划分的隔离选型矩阵、完整网络策略矩阵、凭据建议以及与 nano-agent bwrap/sandbox-exec 沙箱的分层关系见 [`docs/SECURITY-HARDENING.zh-CN.md`](docs/SECURITY-HARDENING.zh-CN.md)（[English](docs/SECURITY-HARDENING.md)）。
+
+## 定位：Harbor 式评测后端（中期）
+
+Nano Cloud 的中期定位是 **nano-agent 大规模基准评测的执行后端**，参照 Terminal-Bench 生态中 [Harbor](https://github.com/laude-institute/harbor) 框架的范式：每个基准任务在独立容器中运行，由**独立验证器**——而非 agent 本身、也非模型——判分。评测对象是*任意完整 agent*，而不是"模型 + 固定脚手架"，因此同一套 harness 可以并排基准测试 nano-agent 的各发布版本、第三方 agent 和消融实验。
+
+它与现有架构的对应关系：
+
+- **Gateway** = 实验调度器：分发任务、收集 run 事件与判定结果；
+- **Worker 集群** = 并行执行器：每个 run 一个容器化任务，经 `Policy.resources` 限制资源；
+- **验证器（Verifier）** = 在 agent 结束后消费任务产物的独立组件——其消费路径为何必须显式审计，见 [`docs/SECURITY-HARDENING.zh-CN.md`](docs/SECURITY-HARDENING.zh-CN.md) 中的交接面原则。
+
+目标规模：**SWE-bench 完整 500 题**与 **pass^k 多次重复实验**，需要在 worker 集群上并行执行数十到数百个 run。
+
+一个该定位在设计上正面应对的注意事项：**评测环境本身会引入方差**——不同沙箱后端（runc 与 `runsc`）的依赖安装速度不同，会导致对超时敏感的成绩产生差异。严肃的对比需要统一硬件、固定沙箱后端并多次重复实验；让这种可复现性在集群规模上切实可行，正是 nano-cloud 作为评测后端要解决的问题之一。
 
 ## 三分钟快速开始
 
