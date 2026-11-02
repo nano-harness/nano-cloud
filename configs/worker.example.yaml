@@ -1,0 +1,61 @@
+# Worker Configuration
+# relay_url: URL of the Nano Cloud Gateway
+# If Nginx proxy is enabled, use port 80 (ws://) or 443 (wss://)
+relay_url: ws://localhost:8081
+enroll_token: ""
+token: ""
+worker_id: ""
+name: nano-sandbox-worker
+version: "2.0"
+labels:
+  - docker-desktop
+workspace_root: /tmp/nano-workspaces
+host_state_root: ""
+state_dir: ""
+
+# Optional: Forward environment variables from host to agent container
+# This allows you to set API keys in your shell (export NANO_API_KEY=...)
+# instead of hardcoding them here.
+env_passthrough:
+  - NANO_API_KEY
+  - NANO_BASE_URL
+  - NANO_MODEL
+  - OPENAI_API_KEY
+  - ANTHROPIC_API_KEY
+  - HTTPS_PROXY
+  - HTTP_PROXY
+  - NO_PROXY
+
+# Optional: Mount a local agent configuration file into the container
+# agent_config_path: "./agent-config.yaml"
+
+# Optional: Real egress allowlist enforcement when RunRequest.policy.network == ALLOWLIST
+# network_policy_image: nano-net-policy-runtime:local
+# network_allowlist:
+#   - host: api.openai.com
+#     protocol: tcp
+#     ports: [443]
+
+# Optional: OCI runtime for agent containers. Empty = docker default (runc).
+# Set to "runsc" (gVisor) for stronger isolation of untrusted, model-generated
+# code. The runtime must be installed and registered with the docker daemon
+# (check the Runtimes section of `docker info`). See docs/SECURITY-HARDENING.md.
+# container_runtime: runsc
+
+runtimes:
+  nano_agent:
+    image: nano-agent-runtime:local
+    env_file: ./nano-agent.env # Load advanced config from file
+    agent_config_dest: /root/.config/nano/config.yaml # Mount target path inside the container
+  claude_code:
+    image: nano-cli-runtime:local
+    env:
+      RUNTIME_BIN: claude
+  opencode:
+    image: nano-cli-runtime:local
+    env:
+      RUNTIME_BIN: opencode
+  custom:
+    image: nano-cli-runtime:local
+    env:
+      RUNTIME_BIN: /bin/echo

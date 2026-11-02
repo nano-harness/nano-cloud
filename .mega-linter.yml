@@ -1,0 +1,9 @@
+# MegaLinter Configuration
+# https://megalinter.io/latest/configuration/
+APPLY_FIXES: all
+ENABLE:
+  - GO
+  - YAML
+SHOW_ELAPSED_TIME: true
+GO_GOLANGCI_LINT_UNSECURED_ENV_VARIABLES:
+  - GOTOOLCHAIN

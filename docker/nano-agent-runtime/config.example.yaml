@@ -1,0 +1,213 @@
+# Nano Code Agent Configuration (Runtime Docker Image Default)
+# This file is baked into the Docker image at /root/.config/nano/config.yaml
+# Config resolution: --config flag > project .nano.yaml > global ~/.config/nano/config.yaml
+# Note: Environment variables (NANO_*, SERPER_API_KEY, TAVILY_API_KEY) override values from config files.
+
+# Core LLM Configuration
+api_key: ""   # Can be set via NANO_API_KEY env var
+base_url: "https://api.deepseek.com/v1"
+model: "deepseek-chat"
+verbose: true
+
+# Built-in pprof (local-only listener)
+enable_pprof: false
+pprof_port: 6060
+
+# System Limits and Timeouts
+max_file_size: 10485760  # 10MB in bytes
+response_timeout: 300s   # LLM response timeout
+http_timeout: 60s        # HTTP client timeout
+
+# Context Management
+context:
+  max_tokens: 120000
+  compression_ratio: 0.25
+  preserve_recent_turns: 8
+  enable_compression: true
+
+# Reasoning Configuration (for o1 models)
+reasoning:
+  enabled: false           # Enable reasoning mode for supported models
+  effort: "medium"         # Reasoning effort level: low, medium, high
+  max_tokens: 0            # Max reasoning tokens (0 = model default)
+  exclude: false           # Exclude reasoning tokens from response
+
+# Memory System Configuration (Mem0 Integration)
+# Mem0 is an AI-native memory layer for AI applications that provides persistent, contextual memory
+# with advanced vector search, graph search, adaptive learning, and multi-modal capabilities
+# Features intelligent semantic understanding and contextual associations for superior memory retrieval
+# Sign up at https://mem0.ai to get your API key
+memory:
+  api_key: ""                 # Get from https://mem0.ai/dashboard
+  base_url: "https://api.mem0.ai"     # Mem0 API base URL
+  user_id: "nano-agent-user"          # Unique identifier for the user
+  org_id: ""                          # Organization ID (optional)
+  project_id: ""                      # Project ID (optional)
+  agent_id: ""                        # Agent ID (optional, auto-generated from subagent selection if not set)
+
+# Safety Settings
+confirm_destructive: false
+
+# Sub-agents Configuration
+# Define specialized sub-agents
+# Usage examples:
+#   - "@coder help me debug this function"
+#   - "使用[writer]来帮助我写文档"
+#   - "Please help me with:analyst for data analysis"
+sub_agents:
+  - agent_name: "coder"
+    system_prompt: "You are a senior software engineer and programming expert, proficient in multiple programming languages and development frameworks. You excel at code design, architecture planning, debugging, and performance optimization. You can write high-quality, maintainable code following best practices and design patterns. You are familiar with modern development tools, version control, test-driven development, and continuous integration."
+    when_to_use: "Use for coding tasks, debugging, code reviews, and technical implementation"
+    model: "gpt-4o"
+    # New fields for independent model configuration - Example with OpenAI
+    model_base_url: "https://api.openai.com/v1"  # Optional: Custom base URL for this sub-agent's model
+    model_api_key: ""                            # Optional: Custom API key for this sub-agent's model
+    # Wildcard patterns are supported in allowed_tools:
+    # - "*" matches any tool name
+    # - "mcp_*" matches all MCP tools (e.g., mcp_filesystem_read, mcp_git_status)
+    # - "web_*" matches all web-related tools
+    # - "file_*" matches all file operation tools
+    # - "?" matches any single character
+    allowed_tools: ["web_search", "workspace_manager", "write_file", "read_file", "list_directory", "glob", "search_file_content", "mcp_*", "mem0_memory", "task_done"]
+    auto_save_memory: true                 # Auto-save conversation to Mem0 (requires memory tools in allowed_tools)
+    enabled: true                          # Enable this sub-agent
+
+  - agent_name: "writer"
+    system_prompt: "You are a professional writer and content creator, skilled in various forms of writing including articles, documentation, creative writing, and technical communication. You excel at creating clear, engaging, and well-structured content tailored to different audiences and purposes."
+    when_to_use: "Use for writing tasks, documentation, articles, content creation, and text editing"
+    model: "gpt-4o-mini"
+    # New fields for independent model configuration
+    model_base_url: "https://api.openai.com/v1"  # Optional: Custom base URL for this sub-agent's model
+    model_api_key: ""                            # Optional: Custom API key for this sub-agent's model
+    # Example using wildcard patterns for tool filtering
+    allowed_tools: ["web_search", "workspace_manager", "write_file", "read_file", "list_directory", "glob", "search_file_content", "mcp_web_*", "mem0_memory", "task_done"]
+    auto_save_memory: false                # Disable auto-save of conversation
+    enabled: true                          # Enable this sub-agent
+
+  - agent_name: "analyst"
+    system_prompt: "You are a data analyst and research specialist, expert in analyzing information, creating reports, and extracting insights from data. You excel at statistical analysis, data visualization, market research, and presenting findings in clear, actionable formats."
+    when_to_use: "Use for data analysis, research, reporting, and analytical tasks"
+    model: "gpt-4o"
+    # New fields for independent model configuration
+    model_base_url: "https://api.openai.com/v1"  # Optional: Custom base URL for this sub-agent's model
+    model_api_key: ""                            # Optional: Custom API key for this sub-agent's model
+    allowed_tools: ["web_search", "workspace_manager", "write_file", "read_file", "list_directory", "glob", "search_file_content", "mem0_memory", "task_done"]
+    auto_save_memory: false                # Disable auto-save of conversation
+    enabled: true                          # Enable this sub-agent
+
+  - agent_name: "穿越小说家"
+    system_prompt: "你是一位擅长穿越小说的作家，专注于将现代元素融入历史背景，创作引人入胜的时间旅行故事。你善于描绘不同时代的历史细节，构建合理的穿越机制，以及刻画角色在异时空中的成长与挣扎。在创作中，你会注重历史准确性与情节张力的平衡，打造既有知识性又富有娱乐性的穿越故事。"
+    when_to_use: "当任务涉及创作穿越时空的小说情节、历史与现代融合的叙事或时间旅行主题时激活"
+    model: "gpt-4"
+    # New fields for independent model configuration
+    model_base_url: "https://api.openai.com/v1"  # Optional: Custom base URL for this sub-agent's model
+    model_api_key: ""                            # Optional: Custom API key for this sub-agent's model
+    allowed_tools: ["web_search", "workspace_manager", "write_file", "read_file", "list_directory", "glob", "search_file_content", "mem0_memory", "task_done"]
+    auto_save_memory: true                 # Auto-save conversation to Mem0
+    enabled: true                          # Enable this sub-agent
+
+  - agent_name: "玄幻小说家"
+    system_prompt: "你是一位玄幻小说大师，精通构建宏大的奇幻世界、复杂的力量体系和史诗般的英雄之旅。你擅长设计独特的修炼体系、神秘的法则与秩序，以及丰富多样的种族与文明。你的创作充满东方玄学与西方奇幻的融合元素，能够编织出错综复杂的情节与扣人心弦的战斗场景，同时赋予角色深刻的成长与蜕变。"
+    when_to_use: "当任务需要创作玄幻世界、魔法系统、修仙体系或奇幻冒险故事时激活"
+    model: "claude-3-opus"
+    # New fields for independent model configuration - Example with Anthropic
+    model_base_url: "https://api.anthropic.com/v1"  # Optional: Custom base URL for this sub-agent's model
+    model_api_key: ""                                # Optional: Custom API key for this sub-agent's model
+    allowed_tools: ["web_search", "workspace_manager", "write_file", "read_file", "list_directory", "glob", "search_file_content", "mem0_memory", "task_done"]
+    auto_save_memory: true                 # Auto-save conversation to Mem0
+    enabled: true                          # Enable this sub-agent
+
+# Tool Configuration
+enabled_tools: []
+disabled_tools: []
+
+# Web Search API Keys
+web_search_api_keys:
+  serper: ""
+  tavily: ""
+  duckduckgo: ""
+
+# Image Generator Configuration
+# Configure image generation service settings
+image_generator:
+  providers:
+    - provider: "openrouter"
+      model: "black-forest-labs/flux-schnell"
+      api_key: ""
+      base_url: ""
+    - provider: "seedream"
+      model: "sdxl"
+      api_key: ""
+      base_url: ""
+
+# MCP (Model Context Protocol) Configuration
+enable_mcp: false
+mcp:
+  enable_client: true
+  servers: []  # See examples below
+  default_transport: "stdio"
+  timeout: 30s
+  max_retries: 3
+  enable_auth: false
+  auth_tokens: {}
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+    ca_file: ""
+    skip_verify: false
+
+# Daemon Mode Configuration
+# Note: pid_file/log_file default to ~/.nano/daemon.pid and ~/.nano/daemon.log if empty
+daemon:
+  port: 8080
+  host: "127.0.0.1"
+  pid_file: ""
+  log_file: ""
+  enable_cors: true
+  api_key: ""  # Optional API key for daemon authentication
+  tls_cert_file: ""
+  tls_key_file: ""
+
+# Sandbox Configuration (Effective in Runtime)
+# File system access control to restrict agent operations to specific paths
+sandbox:
+  enabled: true   # Enable sandbox protection for runtime
+  allowed_paths:   # Paths where agent can read/write files
+    - "/workspace"
+    - "/tmp"
+    - "/var/tmp"
+  blocked_paths:   # Paths that are completely forbidden
+    - "/etc"
+    - "/sys"
+    - "/proc"
+    - "/dev"
+    - "/root"  # Protect configuration and system files
+    - "/boot"
+  readonly_paths:  # Paths that can only be read, not modified
+    - "/usr"
+    - "/bin"
+    - "/lib"
+  hidden_paths:    # Paths that are hidden from agent visibility
+    - "/root/.cache"
+  max_file_size: 10485760  # Maximum file size in bytes (10MB)
+
+# MCP Server Examples
+# To enable MCP, set enable_mcp: true and configure servers:
+# Supported transport types: stdio, streamable, inmemory
+# mcp:
+#   servers:
+#     - name: "filesystem"
+#       command: ["npx", "@modelcontextprotocol/server-filesystem", "/path"]
+#       transport: "stdio"
+#     - name: "git"
+#       command: ["npx", "@modelcontextprotocol/server-git", "--repository", "."]
+#       transport: "stdio"
+#     - name: "web-service"
+#       url: "https://api.example.com/mcp"
+#       transport: "streamable"
+#       headers:
+#         Authorization: "Bearer your-token"
+
+# Environment Variables Alternative
+# See .env.example for supported environment variable configuration
